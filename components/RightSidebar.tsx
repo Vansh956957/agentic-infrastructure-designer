@@ -1,7 +1,7 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Node, AWSServiceHealth, Connection, Group, GroupData, Shape, ShapeData, TextNode, TextNodeData, Vector2D, ValidationIssue, WorkflowStatus } from '../types';
-import { LockIcon, AlignTopIcon, AlignMiddleIcon, AlignBottomIcon, AlignLeftIcon, AlignCenterIcon, AlignRightIcon, XIcon } from './Icons';
+import { LockIcon, AlignTopIcon, AlignMiddleIcon, AlignBottomIcon, AlignLeftIcon, AlignCenterIcon, AlignRightIcon, XIcon, StopIcon } from './Icons';
 import { EC2_INSTANCE_TYPES, RDS_ENGINES, NODE_WIDTH, NODE_HEIGHT, PIPELINE_COMMON_CODE } from '../constants';
 
 type Selection = { type: 'node', id: string } | { type: 'connection', id: string } | { type: 'group', id: string } | { type: 'shape', id: string } | { type: 'text', id: string };
@@ -28,6 +28,7 @@ interface RightSidebarProps {
   onDeleteTextNode: (textId: string) => void;
   onDeselect: () => void;
   onStartWorkflow: (nodeId: string) => void;
+  onStopWorkflow?: () => void;
   workflowStatus?: WorkflowStatus;
   onAlign: (direction: AlignmentDirection) => void;
   isZenMode: boolean; // Kept for type compatibility but unused for visibility
@@ -43,7 +44,7 @@ interface RightSidebarProps {
   onPauseWorkflow?: () => void;
 }
 
-const GeneralNodeConfig: React.FC<{node: Node, onUpdate: (data: any) => void, onStartWorkflow: () => void, workflowStatus?: WorkflowStatus}> = ({node, onUpdate, onStartWorkflow, workflowStatus}) => (
+const GeneralNodeConfig: React.FC<{node: Node, onUpdate: (data: any) => void, onStartWorkflow: () => void, onStopWorkflow?: () => void, workflowStatus?: WorkflowStatus}> = ({node, onUpdate, onStartWorkflow, onStopWorkflow, workflowStatus}) => (
     <>
          <div>
           <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">Label</label>
@@ -69,26 +70,20 @@ const GeneralNodeConfig: React.FC<{node: Node, onUpdate: (data: any) => void, on
         </div>}
         {node.type === 'start' &&
             <button
-                onClick={onStartWorkflow}
+                onClick={workflowStatus === 'running' ? onStopWorkflow : onStartWorkflow}
                 className={`w-full mt-4 text-white font-bold py-2 px-4 rounded transition-colors shadow-sm flex items-center justify-center gap-2 ${
                     workflowStatus === 'running' 
-                    ? 'bg-yellow-600 hover:bg-yellow-700' 
-                    : (workflowStatus === 'paused' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700')
+                    ? 'bg-red-600 hover:bg-red-700 animate-pulse' 
+                    : 'bg-green-600 hover:bg-green-700'
                 }`}
             >
                 {workflowStatus === 'running' && (
                     <>
-                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd"></path></svg>
-                        Pause Workflow
+                        <StopIcon className="w-4 h-4" />
+                        Stop Workflow
                     </>
                 )}
-                {workflowStatus === 'paused' && (
-                    <>
-                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd"></path></svg>
-                        Resume Workflow
-                    </>
-                )}
-                {(workflowStatus === 'idle' || workflowStatus === 'completed') && (
+                {workflowStatus !== 'running' && (
                     <>
                         <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd"></path></svg>
                         Run Workflow
@@ -108,9 +103,20 @@ const CodeInspector: React.FC<{
 }> = ({ node, compareNode, compareMode, appMode, glowButton }) => {
     const [framework, setFramework] = useState<'pytorch' | 'tensorflow'>('pytorch');
     const highlightSpecific = true;
+    const scrollRef = useRef<HTMLDivElement>(null);
 
     const currentCode = framework === 'pytorch' ? (node.data.code || '') : (node.data.codeTF || '# No TensorFlow code available');
     const compareCode = compareNode ? (framework === 'pytorch' ? compareNode.data.code : compareNode.data.codeTF) : undefined;
+
+    // Auto-scroll to highlighted content when it appears
+    useEffect(() => {
+        if (compareMode && scrollRef.current) {
+            const highlightedElement = scrollRef.current.querySelector('.bg-green-900\\/50');
+            if (highlightedElement) {
+                highlightedElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        }
+    }, [compareMode, compareNode]);
 
     const renderCodeBlock = (code: string, comparisonCode?: string, highlightType?: 'add' | 'remove') => {
         const lines = code.split('\n');
@@ -118,7 +124,7 @@ const CodeInspector: React.FC<{
         const commonLines = PIPELINE_COMMON_CODE.split('\n');
 
         return (
-            <div className="flex-1 overflow-auto bg-gray-900 text-gray-100 p-3 rounded-md font-mono text-xs border border-gray-700 shadow-inner h-full min-h-[300px]">
+            <div ref={scrollRef} className="flex-1 overflow-auto bg-gray-900 text-gray-100 p-3 rounded-md font-mono text-xs border border-gray-700 shadow-inner h-full min-h-[300px]">
                 {lines.map((line, idx) => {
                     let className = "px-1 ";
                     
@@ -444,7 +450,7 @@ const AlignmentPanel: React.FC<{onAlign: (direction: AlignmentDirection) => void
     )
 }
 
-export const RightSidebar: React.FC<RightSidebarProps> = ({ selection, node, compareNode, connection, group, shape, textNode, onUpdateNode, onUpdateConnection, onUpdateGroup, onUpdateShape, onUpdateTextNode, onDeleteNode, onDisconnectNode, onDeleteConnection, onDeleteGroup, onDeleteShape, onDeleteTextNode, onDeselect, onStartWorkflow, onAlign, isZenMode, isOpen, onClose, compareMode, setCompareMode, nodes, validationIssues = [], appMode, tutorialGlowButton, tutorialMessage, workflowStatus, onPauseWorkflow }) => {
+export const RightSidebar: React.FC<RightSidebarProps> = ({ selection, node, compareNode, connection, group, shape, textNode, onUpdateNode, onUpdateConnection, onUpdateGroup, onUpdateShape, onUpdateTextNode, onDeleteNode, onDisconnectNode, onDeleteConnection, onDeleteGroup, onDeleteShape, onDeleteTextNode, onDeselect, onStartWorkflow, onStopWorkflow, onAlign, isZenMode, isOpen, onClose, compareMode, setCompareMode, nodes, validationIssues = [], appMode, tutorialGlowButton, tutorialMessage, workflowStatus, onPauseWorkflow }) => {
   
   const handleAutoArrangeTG = (tgNode: Node) => {
       if (!nodes) return;
@@ -519,7 +525,7 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ selection, node, com
                     <>
                       <div className="space-y-4 flex-1 overflow-y-auto pr-1 min-w-[200px]" onMouseDown={() => { if(onPauseWorkflow) onPauseWorkflow(); }}>
                           <ActionSection node={node} issues={validationIssues} onUpdate={(data) => onUpdateNode(node.id, data)} />
-                          <GeneralNodeConfig node={node} onUpdate={(data) => onUpdateNode(node.id, data)} onStartWorkflow={() => onStartWorkflow(node.id)} workflowStatus={workflowStatus} />
+                          <GeneralNodeConfig node={node} onUpdate={(data) => onUpdateNode(node.id, data)} onStartWorkflow={() => onStartWorkflow(node.id)} onStopWorkflow={onStopWorkflow} workflowStatus={workflowStatus} />
                           <ServiceSpecificConfig node={node} onUpdate={(data) => onUpdateNode(node.id, data)} />
                           
                           {node.type === 'tg' && (

@@ -319,16 +319,17 @@ export const ARCHITECTURE_TEMPLATES: Template[] = [
     }
 ];
 
+// Updated AI/DL Templates to be Vertical (Top-Down)
 export const AI_TEMPLATES: Template[] = [
     {
         name: 'Linear Regression Pipeline',
         description: 'Simple supervised learning pipeline for regression.',
         nodes: [
-            { id: 'ai-start', type: 'start', position: { x: 50, y: 100 } },
-            { id: 'ai-data', type: 'ai-dataset', position: { x: 150, y: 100 } },
-            { id: 'ai-split', type: 'ai-split', position: { x: 350, y: 100 } },
-            { id: 'ai-model', type: 'reg-linear', position: { x: 550, y: 100 } },
-            { id: 'ai-end', type: 'end', position: { x: 750, y: 100 } },
+            { id: 'ai-start', type: 'start', position: { x: 400, y: 50 } },
+            { id: 'ai-data', type: 'ai-dataset', position: { x: 400, y: 150 } },
+            { id: 'ai-split', type: 'ai-split', position: { x: 400, y: 250 } },
+            { id: 'ai-model', type: 'reg-linear', position: { x: 400, y: 350 } },
+            { id: 'ai-end', type: 'end', position: { x: 400, y: 450 } },
         ],
         connections: [
             { from: 'ai-start', to: 'ai-data' },
@@ -341,11 +342,11 @@ export const AI_TEMPLATES: Template[] = [
         name: 'Random Forest Classification',
         description: 'A robust classification pipeline using Random Forest.',
         nodes: [
-            { id: 'ai-start', type: 'start', position: { x: 50, y: 100 } },
-            { id: 'ai-data', type: 'ai-dataset', position: { x: 150, y: 100 } },
-            { id: 'ai-scaler', type: 'ai-scaler', position: { x: 350, y: 100 } },
-            { id: 'ai-model', type: 'clf-rf', position: { x: 550, y: 100 } },
-            { id: 'ai-end', type: 'end', position: { x: 750, y: 100 } },
+            { id: 'ai-start', type: 'start', position: { x: 400, y: 50 } },
+            { id: 'ai-data', type: 'ai-dataset', position: { x: 400, y: 150 } },
+            { id: 'ai-scaler', type: 'ai-scaler', position: { x: 400, y: 250 } },
+            { id: 'ai-model', type: 'clf-rf', position: { x: 400, y: 350 } },
+            { id: 'ai-end', type: 'end', position: { x: 400, y: 450 } },
         ],
         connections: [
             { from: 'ai-start', to: 'ai-data' },
@@ -358,10 +359,10 @@ export const AI_TEMPLATES: Template[] = [
         name: 'Vision Transformer (ViT) Classifier',
         description: 'Standard ViT architecture for ImageNet classification.',
         nodes: [
-            { id: 'dl-start', type: 'start', position: { x: 0, y: 100 } },
-            { id: 'aug', type: 'aug-transforms', position: { x: 100, y: 100 } },
-            { id: 'vit', type: 'vit-base', position: { x: 350, y: 100 } },
-            { id: 'train', type: 'train-basic', position: { x: 600, y: 100 } },
+            { id: 'dl-start', type: 'start', position: { x: 400, y: 50 } },
+            { id: 'aug', type: 'aug-transforms', position: { x: 400, y: 150 } },
+            { id: 'vit', type: 'vit-base', position: { x: 400, y: 250 } },
+            { id: 'train', type: 'train-basic', position: { x: 400, y: 350 } },
         ],
         connections: [
             { from: 'dl-start', to: 'aug' },

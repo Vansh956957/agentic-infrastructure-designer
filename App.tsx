@@ -68,6 +68,7 @@ const App: React.FC = () => {
   const [currentStepIndex, setCurrentStepIndex] = useState(0);
   const [workflowRunningNodeId, setWorkflowRunningNodeId] = useState<string | null>(null);
   const workflowTimeoutRef = useRef<number | null>(null);
+  const workflowCodeHistory = useRef<string[]>([]); // Tracks nodes with code during workflow
   const [cameraTransitionDuration, setCameraTransitionDuration] = useState(0);
 
   const [animationState, setAnimationState] = useState<{activeNodes: Set<string>, activeConnections: Set<string>, alertConnections: Set<string>}>({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
@@ -167,7 +168,7 @@ const App: React.FC = () => {
 
   // --- WORKFLOW ENGINE ---
 
-  // Helper to zoom and pan to a specific node
+  // Helper to zoom and pan to a specific node, accounting for sidebars to center perfectly
   const focusOnNode = useCallback((nodeId: string) => {
       const node = nodes.find(n => n.id === nodeId);
       if (!node) return;
@@ -186,13 +187,23 @@ const App: React.FC = () => {
       // Desired Zoom level - Adjusted to cover about 5 elements (~0.8)
       const targetZoom = 0.8;
 
-      // Calculate translation to center the node
-      // x' = (ScreenWidth / 2) - (NodeWorldX * Zoom)
-      const newX = (screenWidth / 2) - (nodeCenterX * targetZoom);
-      const newY = (screenHeight / 2) - (nodeCenterY * targetZoom);
+      // Sidebar offsets calculation
+      const leftSidebarWidth = isLeftSidebarOpen ? 256 : 0; 
+      // Right sidebar is 384px (w-96) normally, or 600px if in compare mode (though compare mode might be off during workflow)
+      const rightSidebarWidth = isRightSidebarOpen ? (compareMode ? 600 : 384) : 0;
+
+      // The available visual center is offset by the left sidebar
+      const visualCenterX = leftSidebarWidth + (screenWidth - leftSidebarWidth - rightSidebarWidth) / 2;
+      const visualCenterY = screenHeight / 2;
+
+      // Calculate translation to center the node in the visible area
+      // WorldX * Scale + TranslateX = ScreenX
+      // TranslateX = ScreenX - WorldX * Scale
+      const newX = visualCenterX - (nodeCenterX * targetZoom);
+      const newY = visualCenterY - (nodeCenterY * targetZoom);
 
       setTransform({ x: newX, y: newY, k: targetZoom });
-  }, [nodes]);
+  }, [nodes, isLeftSidebarOpen, isRightSidebarOpen, compareMode]);
 
   // Helper to Zoom Out to Fit All
   const zoomToFit = useCallback(() => {
@@ -247,33 +258,49 @@ const App: React.FC = () => {
       if (currentStepIndex === 0) {
           const step = workflowQueue[0];
           if (step && step.type === 'node') {
-              // 2s Smooth Transition to Start Node
-              setCameraTransitionDuration(2000); 
+              // Longer initial transition for smoothness
+              setCameraTransitionDuration(2500); 
               focusOnNode(step.id);
               onSelect({ type: 'node', id: step.id }, false);
               
-              // Wait for Zoom (2s) + Stay (2s) = 4s total
+              // Find outgoing connections from start node to glow them early
+              const outgoing = connections.filter(c => c.fromNodeId === step.id);
+              const outgoingIds = outgoing.map(c => c.id);
+              
+              setAnimationState({
+                  activeNodes: new Set([step.id]),
+                  activeConnections: new Set(outgoingIds), // Glow initial arrows immediately
+                  alertConnections: new Set()
+              });
+
+              // Wait longer on start for user orientation
               workflowTimeoutRef.current = window.setTimeout(() => {
                   setCurrentStepIndex(1);
-              }, 4000);
+              }, 4500);
           }
           return;
       }
 
       // Completion
       if (currentStepIndex >= workflowQueue.length) {
-          setCameraTransitionDuration(2000); // 2s Smooth Zoom Out
+          setCameraTransitionDuration(2500); // Smooth Zoom Out
           zoomToFit();
           setWorkflowStatus('completed');
           addToast('Workflow Completed', 'bg-green-600');
-          setAnimationState({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
+          // KEEP activeConnections, clear activeNodes
+          setAnimationState(prev => ({ activeNodes: new Set(), activeConnections: prev.activeConnections, alertConnections: new Set() }));
           
+          // Auto-Close Sidebar on completion
+          setIsRightSidebarOpen(false);
+          setCompareMode(false);
+          setCompareNodeId(null);
+
           // Reset duration and state after animation completes
           workflowTimeoutRef.current = window.setTimeout(() => {
                setCameraTransitionDuration(0); 
                setWorkflowRunningNodeId(null);
                setCurrentStepIndex(0);
-          }, 2000);
+          }, 2500);
           return;
       }
 
@@ -281,19 +308,63 @@ const App: React.FC = () => {
       let delay = 0;
 
       if (step.type === 'node') {
-          // Transition: 1s (Move Slowly)
-          setCameraTransitionDuration(1000); 
+          // Standard step transition
+          setCameraTransitionDuration(1500); 
           focusOnNode(step.id);
-          setAnimationState(prev => ({ ...prev, activeNodes: new Set([step.id]), activeConnections: new Set() }));
-          onSelect({ type: 'node', id: step.id }, false);
           
-          // Wait: Transition (1s) + Stay (2s) = 3s total
+          const currentNode = nodes.find(n => n.id === step.id);
+          const hasCode = currentNode?.data.code || currentNode?.data.codeTF;
+
+          // ML/DL Code Comparison Logic
+          if ((appMode === 'ai' || appMode === 'dl') && hasCode) {
+              const history = workflowCodeHistory.current;
+              const prevNodeId = history.length > 0 ? history[history.length - 1] : null;
+
+              if (prevNodeId) {
+                  // Previous Node found: Set it as Selection (Left/Base), Current as Compare (Right)
+                  onSelect({ type: 'node', id: prevNodeId }, false); 
+                  setCompareNodeId(step.id);
+                  setCompareMode(true);
+              } else {
+                  // First node with code: Just select it
+                  onSelect({ type: 'node', id: step.id }, false);
+                  setCompareNodeId(null);
+                  setCompareMode(false);
+              }
+              
+              // Add current to history if it's new
+              if (!history.includes(step.id)) {
+                  history.push(step.id);
+              }
+          } else {
+              // Standard selection for AWS or non-code nodes
+              onSelect({ type: 'node', id: step.id }, false);
+              setCompareMode(false);
+          }
+          
+          // Find ALL outgoing connections from this node to light them up simultaneously
+          // This creates the "branching flow" effect
+          const outgoing = connections.filter(c => c.fromNodeId === step.id);
+          const outgoingIds = outgoing.map(c => c.id);
+
+          setAnimationState(prev => ({
+              ...prev,
+              activeNodes: new Set([step.id]), // Only highlight current node
+              activeConnections: new Set([...prev.activeConnections, ...outgoingIds]) // Accumulate trails + Light up ALL outgoing
+          }));
+          
+          // Dwell time on node
           delay = 3000;
           
       } else if (step.type === 'connection') {
-          // Connections don't move camera, just animate line
-          setAnimationState(prev => ({ ...prev, activeConnections: new Set([step.id]) })); 
-          delay = 1000; // Flash connection for 1s
+          // Connection step - mainly for timing, the visual might already be lit from the previous node step
+          // Ensure this specific connection is definitely in the set (redundancy is fine)
+          setAnimationState(prev => {
+              const nextConns = new Set(prev.activeConnections);
+              nextConns.add(step.id);
+              return { ...prev, activeConnections: nextConns };
+          });
+          delay = 800; // Shorter dwell on connection traversal
       }
 
       // Schedule Next Step
@@ -307,7 +378,7 @@ const App: React.FC = () => {
           }
       };
 
-  }, [workflowStatus, currentStepIndex, workflowQueue, focusOnNode, zoomToFit, addToast]); 
+  }, [workflowStatus, currentStepIndex, workflowQueue, focusOnNode, zoomToFit, addToast, connections, appMode, nodes]); 
 
   const generateWorkflowQueue = (startNodeId: string): WorkflowStep[] => {
       const queue: WorkflowStep[] = [];
@@ -322,7 +393,7 @@ const App: React.FC = () => {
           // Find outgoing connections
           const outgoing = connections.filter(c => c.fromNodeId === currentId);
           
-          // Sort outgoing by y position
+          // Sort outgoing by y position to give a deterministic top-down flow
           outgoing.sort((a, b) => {
               const nodeA = nodeMap.get(a.toNodeId);
               const nodeB = nodeMap.get(b.toNodeId);
@@ -346,16 +417,25 @@ const App: React.FC = () => {
       const queue = generateWorkflowQueue(nodeId);
       if (queue.length === 0) return;
 
+      // Initial Camera Setup for Start
+      setCameraTransitionDuration(2500); // Slower initial move
+      focusOnNode(nodeId);
+
+      // Reset state
       setWorkflowQueue(queue);
       setCurrentStepIndex(0);
       setWorkflowStatus('running');
       setWorkflowRunningNodeId(nodeId);
+      workflowCodeHistory.current = []; // Clear code history
+      
+      // Open Right Sidebar, Close Left Sidebar for clean view
       setIsRightSidebarOpen(true);
+      setIsLeftSidebarOpen(false);
       
       setAnimationState({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
       addToast('Workflow Started', 'bg-blue-600');
 
-  }, [nodes, connections, addToast]); 
+  }, [nodes, connections, addToast, focusOnNode]); 
 
   const handleToggleWorkflow = useCallback(() => {
       if (workflowStatus === 'running') {
@@ -378,7 +458,16 @@ const App: React.FC = () => {
      setWorkflowRunningNodeId(null);
      setCameraTransitionDuration(2000); // 2s Smooth Zoom Out on Stop
      zoomToFit();
+     // Keep persistent arrows on manual stop as well? 
+     // Usually stop implies "reset". The prompt says "after workflow is zoomed out... keep glowing".
+     // That refers to completion. For manual stop, let's reset to clean slate as per typical UX.
      setAnimationState({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
+     
+     // Close property panel on stop
+     setIsRightSidebarOpen(false);
+     setCompareMode(false);
+     setCompareNodeId(null);
+
      if (workflowTimeoutRef.current) clearTimeout(workflowTimeoutRef.current);
      addToast('Workflow Stopped', 'bg-gray-600');
      
@@ -783,9 +872,33 @@ const App: React.FC = () => {
       const sourceSize = isSourceWorkflow ? {w: WORKFLOW_NODE_SIZE, h: WORKFLOW_NODE_SIZE} : {w: NODE_WIDTH, h: NODE_HEIGHT};
       
       let position: Vector2D;
+      
       if (sourceNode.type === 'tg') {
-          position = { x: sourceNode.position.x + 50, y: sourceNode.position.y + 60 };
+          // TARGET GROUP GRID LAYOUT LOGIC
+          // Find existing children loosely based on position containment
+          // Assuming TG is 300x200 (hardcoded in DraggableNode)
+          const tgWidth = 300;
+          const tgHeight = 200;
+          
+          const children = nodes.filter(n => 
+              n.position.x >= sourceNode.position.x && 
+              n.position.x < sourceNode.position.x + tgWidth &&
+              n.position.y >= sourceNode.position.y &&
+              n.position.y < sourceNode.position.y + tgHeight
+          );
+          
+          const count = children.length;
+          const col = count % 2; // 2 columns
+          const row = Math.floor(count / 2);
+          
+          // Calculate precise grid position
+          position = { 
+              x: sourceNode.position.x + 20 + (col * (NODE_WIDTH - 40)), // Overlap slightly or tight fit
+              y: sourceNode.position.y + 40 + (row * (NODE_HEIGHT + 10))
+          };
+          
       } else {
+          // Default linear placement
           position = { x: sourceNode.position.x + sourceSize.w + 100, y: sourceNode.position.y };
       }
 
@@ -808,7 +921,7 @@ const App: React.FC = () => {
         };
         setConnections((prev) => [...prev, newConnection]);
       }
-  }, [pushToUndoStack]);
+  }, [pushToUndoStack, nodes]);
   
   const updateNodeGroup = useCallback((nodeId: string) => {
       setNodes(prevNodes => {
@@ -961,7 +1074,16 @@ const App: React.FC = () => {
     addToast('Canvas cleared!', 'bg-blue-500');
   }, [pushToUndoStack, addToast]);
 
+  const handleManualTransformChange: React.Dispatch<React.SetStateAction<{ x: number; y: number; k: number; }>> = (value) => {
+      // If manual interaction occurs, ensure we aren't in a transition state
+      if (cameraTransitionDuration !== 0) {
+          setCameraTransitionDuration(0);
+      }
+      setTransform(value);
+  };
+
   const handleZoom = (amount: number) => {
+      setCameraTransitionDuration(0);
       setTransform(prev => {
           const newK = Math.max(0.1, Math.min(5, prev.k + amount));
           return { ...prev, k: newK };
@@ -969,6 +1091,7 @@ const App: React.FC = () => {
   }
   
   const setZoomLevel = (percent: number) => {
+       setCameraTransitionDuration(0);
        setTransform(prev => {
           const newK = Math.max(0.1, Math.min(5, percent / 100));
           return { ...prev, k: newK };
@@ -1138,6 +1261,7 @@ const App: React.FC = () => {
       const isHorizontal = selectionBounds.w > selectionBounds.h;
       
       if (isHorizontal) {
+          // Sort by X
           selectedNodes.sort((a, b) => a.position.x - b.position.x);
           
           let currentX = selectedNodes[0].position.x;
@@ -1146,7 +1270,7 @@ const App: React.FC = () => {
           selectedNodes.forEach((node, index) => {
               if (index === 0) {
                   currentX += (node.type === 'start' || node.type === 'end' ? WORKFLOW_NODE_SIZE : NODE_WIDTH) + gap;
-                  return; 
+                  return; // Reference node stays put
               }
               
               const nodeIndex = updatedNodes.findIndex(n => n.id === node.id);
@@ -1160,6 +1284,7 @@ const App: React.FC = () => {
           });
           setNodes(updatedNodes);
       } else {
+          // Sort by Y
           selectedNodes.sort((a, b) => a.position.y - b.position.y);
           
           let currentY = selectedNodes[0].position.y;
@@ -1168,7 +1293,7 @@ const App: React.FC = () => {
           selectedNodes.forEach((node, index) => {
               if (index === 0) {
                   currentY += (node.type === 'start' || node.type === 'end' ? WORKFLOW_NODE_SIZE : NODE_HEIGHT) + gap;
-                  return;
+                  return; // Reference node stays put
               }
               
               const nodeIndex = updatedNodes.findIndex(n => n.id === node.id);
@@ -1184,154 +1309,118 @@ const App: React.FC = () => {
       }
   }
 
-  const singleSelection = selection.length === 1 ? selection[0] : null;
-  const selectedNode = singleSelection?.type === 'node' ? nodes.find(n => n.id === singleSelection.id) : null;
-  const compareNode = compareNodeId ? nodes.find(n => n.id === compareNodeId) : null;
-  const selectedConnection = singleSelection?.type === 'connection' ? connections.find(c => c.id === singleSelection.id) : null;
-  const selectedGroup = singleSelection?.type === 'group' ? groups.find(g => g.id === singleSelection.id) : null;
-  const selectedShape = singleSelection?.type === 'shape' ? shapes.find(s => s.id === singleSelection.id) : null;
-  const selectedTextNode = singleSelection?.type === 'text' ? textNodes.find(t => t.id === singleSelection.id) : null;
+  const exportAsJson = useCallback(() => {
+    const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(getCurrentState(), null, 2));
+    const downloadAnchorNode = document.createElement('a');
+    downloadAnchorNode.setAttribute("href", dataStr);
+    downloadAnchorNode.setAttribute("download", `aws-architecture-${Date.now()}.json`);
+    document.body.appendChild(downloadAnchorNode);
+    downloadAnchorNode.click();
+    downloadAnchorNode.remove();
+    addToast('Exported as JSON', 'bg-green-600');
+  }, [getCurrentState, addToast]);
 
-
-  const exportAsJson = () => {
-    const data = { nodes, connections, groups, shapes, textNodes };
-    const jsonString = `data:text/json;charset=utf-8,${encodeURIComponent(
-      JSON.stringify(data, null, 2)
-    )}`;
-    const link = document.createElement("a");
-    link.href = jsonString;
-    link.download = `aws-visualizer-${appMode}.json`;
-    link.click();
-  };
-  
   const exportAsImage = useCallback(async (area: {x: number, y: number, width: number, height: number} | null) => {
-    const allElements = [
-        ...nodes.map(n => {
-            const isWorkflow = n.type === 'start' || n.type === 'end';
-            return {...n, size: isWorkflow ? {width: WORKFLOW_NODE_SIZE, height: WORKFLOW_NODE_SIZE} : { width: NODE_WIDTH, height: NODE_HEIGHT }};
-        }),
-        ...groups,
-        ...shapes,
-        ...textNodes,
-    ];
-    
-    if (allElements.length === 0) return;
-
-    let exportBounds = area;
-
-    if (!exportBounds) {
-        let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-        allElements.forEach((el: any) => {
-            minX = Math.min(minX, el.position.x);
-            minY = Math.min(minY, el.position.y);
-            maxX = Math.max(maxX, el.position.x + el.size.width);
-            maxY = Math.max(maxY, el.position.y + el.size.height);
-        });
-        exportBounds = { x: minX - 20, y: minY - 20, width: (maxX - minX) + 40, height: (maxY - minY) + 40 };
-    }
-
-    const canvasContainer = document.getElementById('canvas-content-wrapper');
-    if (!canvasContainer) return;
-
-    let styles = '';
-    for (const sheet of Array.from(document.styleSheets)) {
-        try {
-            for (const rule of Array.from(sheet.cssRules)) {
-                styles += rule.cssText;
-            }
-        } catch (e) {
-            console.warn("Could not read CSS rules", e);
-        }
-    }
-    
-    const scaleFactor = 2; 
-    const svgWidth = exportBounds.width;
-    const svgHeight = exportBounds.height;
-    
-    const svgString = `
-      <svg width="${svgWidth}" height="${svgHeight}" xmlns="http://www.w3.org/2000/svg" 
-        viewBox="${exportBounds.x} ${exportBounds.y} ${svgWidth} ${svgHeight}">
-        <style>${styles}</style>
-        <foreignObject x="0" y="0" width="100%" height="100%">
-          <div xmlns="http://www.w3.org/1999/xhtml" style="position: relative; width: ${canvasContainer.scrollWidth}px; height: ${canvasContainer.scrollHeight}px;" class="${theme}">
-            ${canvasContainer.innerHTML}
-          </div>
-        </foreignObject>
-      </svg>
-    `.replace(/url\("#arrowhead(?:-highlight|-danger)?"\)/g, '');
-
-    const url = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgString)}`;
-    const img = new Image();
-
-    img.onload = () => {
-        const canvas = document.createElement('canvas');
-        canvas.width = svgWidth * scaleFactor;
-        canvas.height = svgHeight * scaleFactor;
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-            ctx.scale(scaleFactor, scaleFactor);
-            ctx.drawImage(img, 0, 0, svgWidth, svgHeight);
-            const link = document.createElement('a');
-            link.href = canvas.toDataURL('image/png');
-            link.download = `aws-visualizer-${appMode}.png`;
-            link.click();
-        }
-        URL.revokeObjectURL(url);
-    };
-    img.src = url;
     setIsSelectingForExport(false);
-  }, [nodes, groups, shapes, textNodes, theme, appMode]);
+    // Short delay to allow UI to update (hide selection box)
+    await new Promise(resolve => setTimeout(resolve, 50));
+    
+    const element = document.querySelector('main');
+    if (!element) return;
 
+    addToast('Generating Image...', 'bg-blue-500');
 
-  const handleExportGif = useCallback(async () => {
-      if (typeof window['GIF'] === 'undefined' || typeof window['html2canvas'] === 'undefined') {
-          addToast('Error: GIF/Canvas libraries not loaded', 'bg-red-500');
-          return;
-      }
-      addToast('GIF export started', 'bg-blue-600');
-  }, [addToast]);
+    try {
+        const canvas = await html2canvas(element as HTMLElement, {
+            useCORS: true,
+            backgroundColor: theme === 'dark' ? '#111827' : '#f9fafb',
+            logging: false,
+            ignoreElements: (node: Element) => node.classList.contains('selection-overlay') || node.classList.contains('toast-notification')
+        });
 
+        let finalCanvas = canvas;
+        if (area) {
+             const screenX = area.x * transform.k + transform.x;
+             const screenY = area.y * transform.k + transform.y;
+             const screenW = area.width * transform.k;
+             const screenH = area.height * transform.k;
 
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
-        e.preventDefault();
-        setIsCommandPaletteOpen(true);
-        return;
-      }
-      if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
-        e.preventDefault();
-        if(e.shiftKey) {
-            handleRedo();
-        } else {
-            handleUndo();
+             const cropped = document.createElement('canvas');
+             cropped.width = screenW;
+             cropped.height = screenH;
+             const ctx = cropped.getContext('2d');
+             if (ctx) {
+                 ctx.drawImage(canvas, screenX, screenY, screenW, screenH, 0, 0, screenW, screenH);
+                 finalCanvas = cropped;
+             }
         }
-        return;
-      }
 
-      if (document.activeElement?.tagName === 'INPUT' || document.activeElement?.tagName === 'TEXTAREA') return;
-      
-      const step = 40; 
-      switch(e.key) {
-          case 'ArrowUp':
-              setTransform(t => ({...t, y: t.y + step}));
-              break;
-          case 'ArrowDown':
-              setTransform(t => ({...t, y: t.y - step}));
-              break;
-          case 'ArrowLeft':
-              setTransform(t => ({...t, x: t.x + step}));
-              break;
-          case 'ArrowRight':
-              setTransform(t => ({...t, x: t.x - step}));
-              break;
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo]);
+        const link = document.createElement('a');
+        link.download = `diagram-${Date.now()}.png`;
+        link.href = finalCanvas.toDataURL('image/png');
+        link.click();
+        addToast('Image Downloaded', 'bg-green-600');
+    } catch (e) {
+        console.error("Export image failed", e);
+        addToast('Export failed', 'bg-red-600');
+    }
+  }, [theme, transform, addToast]);
 
-  const isZenMode = !isLeftSidebarOpen && !isRightSidebarOpen;
+  const handleExportGif = useCallback(() => {
+    if (isRecordingGif) return;
+    const element = document.querySelector('main');
+    if (!element) return;
+
+    setIsRecordingGif(true);
+    addToast('Recording GIF (Capture...', 'bg-blue-600');
+    
+    // We assume GIF.js is loaded
+    const gif = new GIF({
+      workers: 2,
+      quality: 10,
+      width: element.clientWidth,
+      height: element.clientHeight,
+      // Attempt to use a CDN worker if local is missing, or rely on setup
+      workerScript: 'https://cdnjs.cloudflare.com/ajax/libs/gif.js/0.2.0/gif.worker.js' 
+    });
+    
+    let frames = 0;
+    const maxFrames = 15; // Limit frames for performance example
+
+    const captureFrame = async () => {
+        if (frames >= maxFrames) {
+            addToast('Rendering GIF...', 'bg-blue-500');
+            gif.on('finished', (blob: Blob) => {
+                const link = document.createElement('a');
+                link.href = URL.createObjectURL(blob);
+                link.download = `recording-${Date.now()}.gif`;
+                link.click();
+                setIsRecordingGif(false);
+                addToast('GIF Saved', 'bg-green-600');
+            });
+            gif.render();
+            return;
+        }
+
+        try {
+            const canvas = await html2canvas(element as HTMLElement, {
+                useCORS: true,
+                backgroundColor: theme === 'dark' ? '#111827' : '#f9fafb',
+                logging: false,
+                ignoreElements: (node: Element) => node.classList.contains('selection-overlay')
+            });
+            gif.addFrame(canvas, {delay: 500});
+            frames++;
+            setTimeout(captureFrame, 500); // 2 FPS roughly
+        } catch (e) {
+            console.error(e);
+            setIsRecordingGif(false);
+            addToast('GIF Failed', 'bg-red-600');
+        }
+    }
+    
+    captureFrame();
+  }, [isRecordingGif, theme, addToast]);
 
   const AlignmentToolbar = () => {
       const [gap, setGap] = useState(50);
@@ -1344,11 +1433,11 @@ const App: React.FC = () => {
           isDragging.current = true;
           startY.current = e.clientY;
           startGap.current = gap;
-          pushToUndoStack(); 
+          pushToUndoStack(); // Save state before drag starts
           
           const handleMouseMove = (ev: MouseEvent) => {
               if (!isDragging.current) return;
-              const diff = startY.current - ev.clientY; 
+              const diff = startY.current - ev.clientY; // Drag up increases gap
               const newGap = Math.max(0, startGap.current + diff);
               setGap(newGap);
               handleGapDistribution(newGap);
@@ -1385,6 +1474,7 @@ const App: React.FC = () => {
               <button onClick={() => handleDistribute('horizontal')} title="Tidy Up Horizontal" className="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"><DistributeHorizontalIcon className="w-4 h-4"/></button>
               <button onClick={() => handleDistribute('vertical')} title="Tidy Up Vertical" className="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"><DistributeVerticalIcon className="w-4 h-4"/></button>
               
+              {/* Gap Tool */}
               <div className="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1"></div>
               <div className="flex items-center space-x-1 bg-gray-100 dark:bg-gray-900 rounded px-1">
                   <input 
@@ -1408,6 +1498,15 @@ const App: React.FC = () => {
           </div>
       )
   }
+
+  const selectedNode = selection.length === 1 && selection[0].type === 'node' ? nodes.find(n => n.id === selection[0].id) : undefined;
+  const compareNode = compareNodeId ? nodes.find(n => n.id === compareNodeId) : undefined;
+  const selectedConnection = selection.length === 1 && selection[0].type === 'connection' ? connections.find(c => c.id === selection[0].id) : undefined;
+  const selectedGroup = selection.length === 1 && selection[0].type === 'group' ? groups.find(g => g.id === selection[0].id) : undefined;
+  const selectedShape = selection.length === 1 && selection[0].type === 'shape' ? shapes.find(s => s.id === selection[0].id) : undefined;
+  const selectedTextNode = selection.length === 1 && selection[0].type === 'text' ? textNodes.find(t => t.id === selection[0].id) : undefined;
+  
+  const isZenMode = !isLeftSidebarOpen && !isRightSidebarOpen;
 
   return (
     <div className={`flex h-screen w-screen font-sans bg-gray-50 dark:bg-gray-900 text-gray-900 dark:text-gray-200 overflow-hidden ${theme}`}>
@@ -1444,7 +1543,7 @@ const App: React.FC = () => {
         onSelectAreaForExport={() => setIsSelectingForExport(true)}
         onExportGif={handleExportGif}
         isRecordingGif={isRecordingGif}
-        isZenMode={isZenMode}
+        isZenMode={isZenMode} // Keeping prop for now but handled via isOpen
         isOpen={isLeftSidebarOpen}
         snapshots={snapshots}
         onTakeSnapshot={(name) => {
@@ -1471,6 +1570,7 @@ const App: React.FC = () => {
       <main className="flex-1 relative overflow-hidden transition-all duration-300">
         <AlignmentToolbar />
         <div className="absolute bottom-4 left-4 z-50 flex items-center space-x-3">
+            {/* Edit Actions */}
             <div className="flex items-center space-x-1 bg-white dark:bg-gray-800 p-1.5 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700/50">
                 <button 
                     title="Select Mode" 
@@ -1485,6 +1585,7 @@ const App: React.FC = () => {
                 <button title="Undo (Ctrl+Z)" onClick={handleUndo} disabled={undoStack.length === 0} className="p-2 rounded-md text-gray-500 dark:text-gray-300 hover:bg-orange-500 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"><UndoIcon className="w-5 h-5"/></button>
                 <button title="Redo (Ctrl+Shift+Z)" onClick={handleRedo} disabled={redoStack.length === 0} className="p-2 rounded-md text-gray-500 dark:text-gray-300 hover:bg-orange-500 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"><RedoIcon className="w-5 h-5"/></button>
                  <div className="w-px h-6 bg-gray-300 dark:bg-gray-600"></div>
+                 {/* Zoom Controls */}
                  <button title="Zoom Out" onClick={() => handleZoom(-0.1)} className="p-2 rounded-md text-gray-500 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"><ZoomOutIcon className="w-5 h-5"/></button>
                  <div className="relative group flex items-center">
                     <input 
@@ -1500,6 +1601,7 @@ const App: React.FC = () => {
             </div>
         </div>
         
+        {/* Error Validation Panel (AWS Mode Only) */}
         {selectedIssue && appMode === 'aws' && (
             <div className="absolute bottom-20 left-1/2 transform -translate-x-1/2 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-2xl border-l-4 border-red-500 p-4 max-w-lg w-full animate-bounce-in">
                 <div className="flex justify-between items-start">
@@ -1558,7 +1660,7 @@ const App: React.FC = () => {
           onDisconnectNode={disconnectNode}
           onStartWorkflow={handleStartWorkflowWrapper}
           onStopWorkflow={handleStopWorkflow}
-          workflowRunningNodeId={workflowRunningNodeId} 
+          workflowRunningNodeId={workflowRunningNodeId} // Kept for legacy compatibility if needed
           selection={selection}
           onSelect={onSelect}
           isSelectingForExport={isSelectingForExport}
@@ -1569,7 +1671,8 @@ const App: React.FC = () => {
           animationState={animationState}
           onInteractionEnd={pushToUndoStack}
           transform={transform}
-          setTransform={setTransform}
+          setTransform={handleManualTransformChange}
+          // Pass down props for tutorial highlighting if needed, or handle in DraggableNode logic based on ID
           activeTutorialNodeId={tutorialState.highlightNodeId}
           cameraTransitionDuration={cameraTransitionDuration}
         />
@@ -1595,16 +1698,17 @@ const App: React.FC = () => {
         onDeleteTextNode={deleteTextNode}
         onDeselect={() => setSelection([])}
         onStartWorkflow={handleToggleWorkflow}
+        onStopWorkflow={handleStopWorkflow}
         workflowStatus={workflowStatus}
         onAlign={handleAlign}
-        isZenMode={isZenMode} 
-        isOpen={isRightSidebarOpen} 
-        onClose={() => setIsRightSidebarOpen(false)} 
+        isZenMode={isZenMode} // Pass false or logic for width
+        isOpen={isRightSidebarOpen} // Pass visibility state
+        onClose={() => setIsRightSidebarOpen(false)} // Pass close handler
         compareMode={compareMode}
         setCompareMode={setCompareMode}
         nodes={nodes}
         validationIssues={validationIssues}
-        appMode={appMode} 
+        appMode={appMode} // Pass mode to hide TF button in ML
         tutorialGlowButton={tutorialState.glowButton}
         tutorialMessage={tutorialState.message}
         onPauseWorkflow={() => {

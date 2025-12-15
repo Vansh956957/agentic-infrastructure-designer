@@ -503,7 +503,7 @@ export const Canvas: React.FC<CanvasProps> = ({
             />
         ))}
 
-        <svg id="connectors-svg" className="w-full h-full absolute top-0 left-0 pointer-events-none" style={{ transformOrigin: '0 0' }}>
+        <svg id="connectors-svg" className="w-full h-full absolute top-0 left-0 pointer-events-none overflow-visible" style={{ transformOrigin: '0 0' }}>
             <defs>
                 <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="8" refY="3.5" orient="auto">
                     <polygon points="0 0, 10 3.5, 0 7" fill="#9ca3af" className="dark:fill-gray-600" />
