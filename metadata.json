@@ -1,0 +1,5 @@
+{
+  "name": "AWS Architecture Designer",
+  "description": "A modern, dynamic whiteboard-style web application to create, visualize, and manage AWS architecture diagrams in an interactive canvas space. Drag and drop services, create connections, and design your infrastructure with ease.",
+  "requestFramePermissions": []
+}
