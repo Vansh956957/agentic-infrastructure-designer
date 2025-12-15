@@ -1,7 +1,7 @@
 
 import React from 'react';
 import { AWSCategory, Template } from './types';
-import { Ec2Icon, LambdaIcon, AutoScalingGroupIcon, EcsIcon, EksIcon, AmiIcon, VpcIcon, SubnetIcon, LoadBalancerIcon, TargetGroupIcon, Route53Icon, ApiGatewayIcon, SqsIcon, S3Icon, EfsIcon, EbsIcon, RdsIcon, DynamoDbIcon, CloudWatchIcon, CloudTrailIcon, ConfigIcon, XRayIcon, IamRoleIcon, SecurityGroupIcon, WafIcon, SecretsManagerIcon, DatadogIcon, GrafanaIcon, PrometheusIcon, ElkIcon, StartNodeIcon, EndNodeIcon, GroupIcon, RectangleIcon, EllipseIcon, TextIcon, EsaIcon, G6Icon, GlobalSolutionIcon, RedRoofIcon, HiltonIcon, TenetKeyIcon, CloudFrontIcon, SnsIcon, DataIcon, ModelIcon, TrainingIcon, EvalIcon } from './components/Icons';
+import { Ec2Icon, LambdaIcon, AutoScalingGroupIcon, EcsIcon, EksIcon, AmiIcon, VpcIcon, SubnetIcon, LoadBalancerIcon, TargetGroupIcon, Route53Icon, ApiGatewayIcon, SqsIcon, S3Icon, EfsIcon, EbsIcon, RdsIcon, DynamoDbIcon, CloudWatchIcon, CloudTrailIcon, ConfigIcon, XRayIcon, IamRoleIcon, SecurityGroupIcon, WafIcon, SecretsManagerIcon, DatadogIcon, GrafanaIcon, PrometheusIcon, ElkIcon, StartNodeIcon, EndNodeIcon, GroupIcon, RectangleIcon, EllipseIcon, TextIcon, CloudFrontIcon, SnsIcon, DataIcon, ModelIcon, TrainingIcon, EvalIcon } from './components/Icons';
 import { DL_CATEGORIES } from './dl-constants'; // Import DL categories
 
 export const NODE_WIDTH = 180;
@@ -47,19 +47,19 @@ const COLORS = {
 
 export const AWS_CATEGORIES: AWSCategory[] = [
   {
+    name: 'Workflow',
+    services: [
+      { id: 'start', name: 'Start', icon: StartNodeIcon, defaultData: { label: 'Start' } },
+      { id: 'end', name: 'End', icon: EndNodeIcon, defaultData: { label: 'End' } },
+    ]
+  },
+  {
     name: 'Shapes & Layout',
     services: [
         { id: 'group', name: 'Group Outline', icon: GroupIcon, defaultData: { label: 'Group' } },
         { id: 'shape-rectangle', name: 'Rectangle', icon: RectangleIcon, defaultData: { label: 'Rectangle' } },
         { id: 'shape-ellipse', name: 'Ellipse', icon: EllipseIcon, defaultData: { label: 'Ellipse' } },
         { id: 'text', name: 'Text', icon: TextIcon, defaultData: { label: 'Text' } },
-    ]
-  },
-  {
-    name: 'Workflow',
-    services: [
-      { id: 'start', name: 'Start', icon: StartNodeIcon, defaultData: { label: 'Start' } },
-      { id: 'end', name: 'End', icon: EndNodeIcon, defaultData: { label: 'End' } },
     ]
   },
   {
@@ -128,18 +128,7 @@ export const AWS_CATEGORIES: AWSCategory[] = [
       { id: 'prometheus', name: 'Prometheus', icon: PrometheusIcon, defaultData: { label: 'Prometheus' } },
       { id: 'elk', name: 'ELK Stack', icon: ElkIcon, defaultData: { label: 'ELK Stack' } },
     ],
-  },
-  {
-    name: 'Business Units',
-    services: [
-        { id: 'bu-esa', name: 'ESA', icon: EsaIcon, defaultData: { label: 'ESA', traffic: 'normal' } },
-        { id: 'bu-g6', name: 'G6', icon: G6Icon, defaultData: { label: 'G6', traffic: 'normal' } },
-        { id: 'bu-globalsolution', name: 'Global Solution', icon: GlobalSolutionIcon, defaultData: { label: 'GS', traffic: 'normal' } },
-        { id: 'bu-redroof', name: 'RedRoof', icon: RedRoofIcon, defaultData: { label: 'RR', traffic: 'normal' } },
-        { id: 'bu-hilton', name: 'Hilton', icon: HiltonIcon, defaultData: { label: 'H', traffic: 'normal' } },
-        { id: 'bu-tenetkey', name: 'TenetKey', icon: TenetKeyIcon, defaultData: { label: 'TK', traffic: 'normal' } },
-    ]
-  },
+  }
 ];
 
 export const AI_CATEGORIES: AWSCategory[] = [
@@ -369,11 +358,13 @@ export const AI_TEMPLATES: Template[] = [
         name: 'Vision Transformer (ViT) Classifier',
         description: 'Standard ViT architecture for ImageNet classification.',
         nodes: [
-            { id: 'aug', type: 'aug-transforms', position: { x: 50, y: 100 } },
-            { id: 'vit', type: 'vit-base', position: { x: 300, y: 100 } },
-            { id: 'train', type: 'train-basic', position: { x: 550, y: 100 } },
+            { id: 'dl-start', type: 'start', position: { x: 0, y: 100 } },
+            { id: 'aug', type: 'aug-transforms', position: { x: 100, y: 100 } },
+            { id: 'vit', type: 'vit-base', position: { x: 350, y: 100 } },
+            { id: 'train', type: 'train-basic', position: { x: 600, y: 100 } },
         ],
         connections: [
+            { from: 'dl-start', to: 'aug' },
             { from: 'aug', to: 'vit' },
             { from: 'vit', to: 'train' },
         ]

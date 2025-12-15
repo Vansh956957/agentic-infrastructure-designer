@@ -45,6 +45,8 @@ interface CanvasProps {
   onInteractionEnd: () => void;
   transform: { x: number, y: number, k: number };
   setTransform: React.Dispatch<React.SetStateAction<{ x: number, y: number, k: number }>>;
+  activeTutorialNodeId?: string | null;
+  cameraTransitionDuration?: number;
 }
 
 const AddRelatedServiceMenu: React.FC<{
@@ -96,7 +98,6 @@ const AdvancedServiceConfigMenu: React.FC<{
     onImport: (config: any) => void;
     onClose: () => void;
 }> = ({ node, onImport, onClose }) => {
-    // ... (Code omitted for brevity, same as previous)
     const menuRef = useRef<HTMLDivElement>(null);
     const [config, setConfig] = useState<any>({ ...node.data });
     const handleChange = (key: string, value: any) => setConfig((prev: any) => ({ ...prev, [key]: value }));
@@ -234,6 +235,8 @@ export const Canvas: React.FC<CanvasProps> = ({
   onInteractionEnd,
   transform,
   setTransform,
+  activeTutorialNodeId,
+  cameraTransitionDuration = 0,
 }) => {
   const [isPanning, setIsPanning] = useState(false);
   const [startPanPosition, setStartPanPosition] = useState({ x: 0, y: 0 });
@@ -242,12 +245,22 @@ export const Canvas: React.FC<CanvasProps> = ({
   const [relatedMenuNode, setRelatedMenuNode] = useState<CanvasNode | null>(null);
   const canvasRef = useRef<HTMLDivElement>(null);
 
-  const getCanvasCoordinates = useCallback((e: ReactMouseEvent | MouseEvent | React.DragEvent): Vector2D => {
+  const getCanvasCoordinates = useCallback((e: ReactMouseEvent | MouseEvent | React.DragEvent | React.TouchEvent | TouchEvent): Vector2D => {
     if (!canvasRef.current) return { x: 0, y: 0 };
     const rect = canvasRef.current.getBoundingClientRect();
+    let clientX, clientY;
+    
+    if ('touches' in e) {
+        clientX = e.touches[0].clientX;
+        clientY = e.touches[0].clientY;
+    } else {
+        clientX = (e as MouseEvent).clientX;
+        clientY = (e as MouseEvent).clientY;
+    }
+
     return {
-      x: (e.clientX - rect.left - transform.x) / transform.k,
-      y: (e.clientY - rect.top - transform.y) / transform.k,
+      x: (clientX - rect.left - transform.x) / transform.k,
+      y: (clientY - rect.top - transform.y) / transform.k,
     };
   }, [transform]);
 
@@ -271,27 +284,48 @@ export const Canvas: React.FC<CanvasProps> = ({
 
   const handleMouseDown = useCallback((e: ReactMouseEvent) => {
     if (isSelectingForExport || isMultiSelectMode) return;
-    // Pan with middle mouse button OR primary button if clicking on canvas background
-    if ((e.button === 1 || (e.button === 0 && e.target === e.currentTarget.firstChild))) {
+    
+    // Pan with left (0) or middle (1) mouse button on background
+    if (e.button === 0 || e.button === 1) {
       e.preventDefault();
       setIsPanning(true);
       setStartPanPosition({ x: e.clientX - transform.x, y: e.clientY - transform.y });
+      document.body.style.cursor = 'grabbing';
     }
   }, [transform, isSelectingForExport, isMultiSelectMode]);
 
-  const handleMouseMove = useCallback((e: MouseEvent) => {
+  // Touch Handlers for Panning
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+      if (isSelectingForExport || isMultiSelectMode) return;
+      // Pan on touch drag
+      setIsPanning(true);
+      const touch = e.touches[0];
+      setStartPanPosition({ x: touch.clientX - transform.x, y: touch.clientY - transform.y });
+  }, [transform, isSelectingForExport, isMultiSelectMode]);
+
+  const handleMouseMove = useCallback((e: MouseEvent | TouchEvent) => {
     if (isPanning) {
-      const newX = e.clientX - startPanPosition.x;
-      const newY = e.clientY - startPanPosition.y;
+      let clientX, clientY;
+      if ('touches' in e) {
+          clientX = e.touches[0].clientX;
+          clientY = e.touches[0].clientY;
+      } else {
+          clientX = (e as MouseEvent).clientX;
+          clientY = (e as MouseEvent).clientY;
+      }
+
+      const newX = clientX - startPanPosition.x;
+      const newY = clientY - startPanPosition.y;
       setTransform((prev) => ({ ...prev, x: newX, y: newY }));
     }
-    if (isConnecting) {
-      setTempConnectorEnd(getCanvasCoordinates(e));
+    if (isConnecting && !('touches' in e)) {
+      setTempConnectorEnd(getCanvasCoordinates(e as MouseEvent));
     }
   }, [isPanning, startPanPosition, isConnecting, getCanvasCoordinates, setTransform]);
 
   const handleMouseUp = useCallback(() => {
     setIsPanning(false);
+    document.body.style.cursor = 'default';
     if (isConnecting) {
       setIsConnecting(null);
       setTempConnectorEnd(null);
@@ -355,19 +389,24 @@ export const Canvas: React.FC<CanvasProps> = ({
     if (isPanning || isConnecting) {
       window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('mouseup', handleMouseUp);
+      window.addEventListener('touchmove', handleMouseMove);
+      window.addEventListener('touchend', handleMouseUp);
     } else {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchmove', handleMouseMove);
+      window.removeEventListener('touchend', handleMouseUp);
     }
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchmove', handleMouseMove);
+      window.removeEventListener('touchend', handleMouseUp);
     };
   }, [isPanning, isConnecting, handleMouseMove, handleMouseUp]);
   
   const fromNodeForTempConnection = isConnecting ? nodes.find(n => n.id === isConnecting) : null;
-  const isWorkflowFrom = fromNodeForTempConnection && (fromNodeForTempConnection.type === 'start' || fromNodeForTempConnection.type === 'end');
-  const fromSize = isWorkflowFrom ? {w: 64, h: 64} : {w: 180, h: 64};
+  const fromSize = fromNodeForTempConnection && (fromNodeForTempConnection.type === 'start' || fromNodeForTempConnection.type === 'end') ? {w: 64, h: 64} : {w: 180, h: 64};
   const fromPos = fromNodeForTempConnection ? { x: fromNodeForTempConnection.position.x, y: fromNodeForTempConnection.position.y } : {x:0, y:0};
 
   const sortedGroups = [...groups].sort((a, b) => (a.size.width * a.size.height) - (b.size.width * b.size.height));
@@ -394,6 +433,7 @@ export const Canvas: React.FC<CanvasProps> = ({
       }}
       onWheel={handleWheel}
       onMouseDown={handleMouseDown}
+      onTouchStart={handleTouchStart}
       onDrop={handleDrop}
       onDragOver={handleDragOver}
       onClick={handleCanvasClick}
@@ -403,7 +443,11 @@ export const Canvas: React.FC<CanvasProps> = ({
       <div
         id="canvas-content-wrapper"
         className="w-full h-full absolute top-0 left-0"
-        style={{ transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})`, transformOrigin: '0 0' }}
+        style={{ 
+            transform: `translate(${transform.x}px, ${transform.y}px) scale(${transform.k})`, 
+            transformOrigin: '0 0',
+            transition: `transform ${cameraTransitionDuration}ms ease-in-out` 
+        }}
       >
         {isSelectingForExport && 
           <SelectionTool 
@@ -504,7 +548,7 @@ export const Canvas: React.FC<CanvasProps> = ({
             onSelect={(id, isMulti) => onSelect({ type: 'node', id }, isMulti)}
             onAddRelated={() => setRelatedMenuNode(node)}
             transformScale={transform.k}
-            isAnimating={animationState.activeNodes.has(node.id)}
+            isAnimating={animationState.activeNodes.has(node.id) || node.id === activeTutorialNodeId}
             onMoveEnd={onInteractionEnd}
             onStartWorkflow={() => onStartWorkflow(node.id)}
             onStopWorkflow={onStopWorkflow}
@@ -515,6 +559,12 @@ export const Canvas: React.FC<CanvasProps> = ({
             isConnected={node.type === 'start' ? connections.some(c => c.fromNodeId === node.id) : true}
           />
         ))}
+        
+        {/* Dim overlay for Tutorial Mode when a node is highlighted */}
+        {activeTutorialNodeId && (
+            <div className="absolute top-0 left-0 w-full h-full bg-black/40 pointer-events-none z-[1]" style={{ transformOrigin: '0 0' }}></div>
+        )}
+
         {relatedMenuNode && (
              <AdvancedServiceConfigMenu 
                 node={relatedMenuNode}

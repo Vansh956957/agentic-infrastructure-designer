@@ -81,8 +81,21 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
       currentTemplates = AI_TEMPLATES;
   } else if (appMode === 'dl') {
       currentCategories = DL_MODE_CATEGORIES;
-      currentTemplates = AI_TEMPLATES; // Reusing AI templates or could define specific DL ones
+      currentTemplates = AI_TEMPLATES; // Reusing AI templates for now, or ensure constants has DL specific
   }
+  
+  const workflowCategory = currentCategories.find(c => c.name.toLowerCase().includes('workflow'));
+  const otherCategories = currentCategories.filter(c => !c.name.toLowerCase().includes('workflow'));
+
+  const isCategoryOpen = (name: string) => {
+      const lowerName = name.toLowerCase();
+      if (lowerName.includes('workflow')) return true;
+      if (appMode === 'ai' && lowerName.includes('regression')) return true;
+      return false; // Keep others closed initially to avoid clutter based on request, or "keep components list toggle open all"
+      // Request says: "keep those components list toogle open all after workflow"
+      // Re-reading: "components should be open... keep those components list toogle open all after workflow"
+      // This implies expanding everything.
+  };
     
   return (
     <aside className={`bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700/50 flex flex-col shadow-lg transition-all duration-300 ease-in-out overflow-hidden ${!isOpen ? 'w-0 p-0 border-none opacity-0' : 'w-64 p-3 opacity-100'}`}>
@@ -91,7 +104,7 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
             <h1 className="text-xl font-bold text-gray-800 dark:text-white tracking-wide">
                 {appMode === 'aws' ? 'AWS Visualizer' : (appMode === 'dl' ? 'Deep Learning' : 'AI Visualizer')}
             </h1>
-            <p className="text-xs text-gray-500 dark:text-gray-400">Designed by Vansh Rewaskar</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">Agentic Infrastructure Designer</p>
         </div>
         <button onClick={onClose} className="text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 transition-colors p-1" title="Close Panel">
             <XIcon className="w-5 h-5" />
@@ -113,9 +126,40 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
             {/* Main Components Section */}
             <div>
                 <h3 className="text-xs font-bold text-gray-400 dark:text-gray-500 uppercase tracking-widest mb-3 px-1">Components</h3>
-                {currentCategories.map((category) => (
+                
+                {/* 1. Workflow */}
+                {workflowCategory && (
+                    <div className="mb-4">
+                        <Section name={workflowCategory.name} defaultOpen={true} onAddAll={() => onAddCategory(workflowCategory)}>
+                            <div className="grid grid-cols-3 gap-2">
+                                {workflowCategory.services.map((service) => (
+                                    <DraggableServiceItem key={service.id} service={service} />
+                                ))}
+                            </div>
+                        </Section>
+                    </div>
+                )}
+
+                {/* 2. Templates (Moved here) */}
+                <div className="mb-4">
+                    <Section name="Templates" defaultOpen={true}>
+                        <div className="space-y-2">
+                            {currentTemplates.map((template: Template) => (
+                                <button key={template.name} onClick={() => onApplyTemplate(template)}
+                                    className="w-full text-left text-sm p-2 rounded-md bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors border border-transparent hover:border-gray-200 dark:hover:border-gray-600"
+                                    title={template.description}
+                                >
+                                    {template.name}
+                                </button>
+                            ))}
+                        </div>
+                    </Section>
+                </div>
+
+                {/* 3. Rest of Categories */}
+                {otherCategories.map((category) => (
                     <div key={category.name} className="mb-4 last:mb-0">
-                        <Section name={category.name} defaultOpen={false} onAddAll={() => onAddCategory(category)}>
+                        <Section name={category.name} defaultOpen={isCategoryOpen(category.name)} onAddAll={() => onAddCategory(category)}>
                             <div className="grid grid-cols-3 gap-2">
                                 {category.services.map((service) => (
                                     <DraggableServiceItem key={service.id} service={service} />
@@ -125,19 +169,6 @@ export const LeftSidebar: React.FC<LeftSidebarProps> = ({
                     </div>
                 ))}
             </div>
-            
-            <Section name="Templates">
-                <div className="space-y-2">
-                    {currentTemplates.map((template: Template) => (
-                        <button key={template.name} onClick={() => onApplyTemplate(template)}
-                            className="w-full text-left text-sm p-2 rounded-md bg-gray-50 dark:bg-gray-700/50 hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-700 dark:text-gray-300 transition-colors border border-transparent hover:border-gray-200 dark:hover:border-gray-600"
-                            title={template.description}
-                        >
-                            {template.name}
-                        </button>
-                    ))}
-                </div>
-            </Section>
 
             <Section name="Snapshots">
                 <div className="space-y-2">

@@ -3,8 +3,8 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { LeftSidebar } from './components/LeftSidebar';
 import { RightSidebar } from './components/RightSidebar';
 import { Canvas } from './components/Canvas';
-import { Node, Connection, Vector2D, AWSService, NodeData, Group, GroupData, Shape, ShapeData, TextNode, TextNodeData, Snapshot, Template, ValidationIssue, TrafficLevel, AWSCategory } from './types';
-import { ALL_SERVICES, NODE_WIDTH, NODE_HEIGHT, WORKFLOW_NODE_SIZE } from './constants';
+import { Node, Connection, Vector2D, AWSService, NodeData, Group, GroupData, Shape, ShapeData, TextNode, TextNodeData, Snapshot, Template, ValidationIssue, TrafficLevel, AWSCategory, WorkflowStatus } from './types';
+import { ALL_SERVICES, NODE_WIDTH, NODE_HEIGHT, WORKFLOW_NODE_SIZE, ARCHITECTURE_TEMPLATES, AI_TEMPLATES } from './constants';
 import { MenuIcon, EraseIcon, UndoIcon, RedoIcon, ZoomInIcon, ZoomOutIcon, CursorIcon, AlignLeftIcon, AlignCenterIcon, AlignRightIcon, AlignTopIcon, AlignMiddleIcon, AlignBottomIcon, DistributeHorizontalIcon, DistributeVerticalIcon, DoubleArrowIcon } from './components/Icons';
 import { CommandPalette } from './components/CommandPalette';
 import { validateGraph } from './validation';
@@ -27,6 +27,7 @@ export type AppState = {
     nextTextNodeId: number;
 }
 type Toast = { id: number, message: string, color: string, duration: number };
+type WorkflowStep = { type: 'node' | 'connection', id: string };
 
 const HISTORY_LIMIT = 50;
 
@@ -52,6 +53,23 @@ const App: React.FC = () => {
   const [compareMode, setCompareMode] = useState(false); 
   const [compareNodeId, setCompareNodeId] = useState<string | null>(null); 
 
+  // Tutorial State
+  const [tutorialState, setTutorialState] = useState<{
+      active: boolean;
+      step: number;
+      highlightNodeId: string | null;
+      glowButton: 'compare' | 'tensorflow' | null;
+      message: string | null;
+  }>({ active: false, step: 0, highlightNodeId: null, glowButton: null, message: null });
+
+  // Workflow / Animation State
+  const [workflowStatus, setWorkflowStatus] = useState<WorkflowStatus>('idle');
+  const [workflowQueue, setWorkflowQueue] = useState<WorkflowStep[]>([]);
+  const [currentStepIndex, setCurrentStepIndex] = useState(0);
+  const [workflowRunningNodeId, setWorkflowRunningNodeId] = useState<string | null>(null);
+  const workflowTimeoutRef = useRef<number | null>(null);
+  const [cameraTransitionDuration, setCameraTransitionDuration] = useState(0);
+
   const [animationState, setAnimationState] = useState<{activeNodes: Set<string>, activeConnections: Set<string>, alertConnections: Set<string>}>({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
@@ -59,6 +77,14 @@ const App: React.FC = () => {
   const [undoStack, setUndoStack] = useState<AppState[]>([]);
   const [redoStack, setRedoStack] = useState<AppState[]>([]);
   
+  const addToast = useCallback((message: string, color: string = 'bg-green-500', duration: number = 4000) => {
+      const id = Date.now() + Math.random();
+      setToasts(prev => [...prev, { id, message, color, duration }]);
+      setTimeout(() => {
+          setToasts(current => current.filter(t => t.id !== id));
+      }, duration);
+  }, []);
+
   // Stored state for switching modes
   const [awsState, setAwsState] = useState<AppState | null>(null);
   const [aiState, setAiState] = useState<AppState | null>(null);
@@ -67,10 +93,6 @@ const App: React.FC = () => {
   // Validation State
   const [validationIssues, setValidationIssues] = useState<ValidationIssue[]>([]);
   const [selectedIssue, setSelectedIssue] = useState<ValidationIssue | null>(null);
-
-  // Workflow State
-  const [workflowRunningNodeId, setWorkflowRunningNodeId] = useState<string | null>(null);
-  const workflowCleanupRef = useRef<(() => void) | null>(null);
   
   // Theme & View State
   const [theme, setTheme] = useState<'dark' | 'light'>('dark');
@@ -132,6 +154,260 @@ const App: React.FC = () => {
       setSelection([]);
   }, []);
   
+  // -- Initialization Logic --
+  useEffect(() => {
+      // Load AWS Template on startup if empty
+      if (nodes.length === 0 && appMode === 'aws') {
+          const template = ARCHITECTURE_TEMPLATES.find(t => t.name === 'Comprehensive Cloud Architecture');
+          if (template) {
+              applyTemplate(template, {x: 100, y: 100});
+          }
+      }
+  }, []); // Run once on mount
+
+  // --- WORKFLOW ENGINE ---
+
+  // Helper to zoom and pan to a specific node
+  const focusOnNode = useCallback((nodeId: string) => {
+      const node = nodes.find(n => n.id === nodeId);
+      if (!node) return;
+
+      const isWf = node.type === 'start' || node.type === 'end';
+      const w = isWf ? WORKFLOW_NODE_SIZE : NODE_WIDTH;
+      const h = isWf ? WORKFLOW_NODE_SIZE : NODE_HEIGHT;
+
+      // Center of the node
+      const nodeCenterX = node.position.x + w / 2;
+      const nodeCenterY = node.position.y + h / 2;
+
+      const screenWidth = window.innerWidth;
+      const screenHeight = window.innerHeight;
+
+      // Desired Zoom level - Adjusted to cover about 5 elements (~0.8)
+      const targetZoom = 0.8;
+
+      // Calculate translation to center the node
+      // x' = (ScreenWidth / 2) - (NodeWorldX * Zoom)
+      const newX = (screenWidth / 2) - (nodeCenterX * targetZoom);
+      const newY = (screenHeight / 2) - (nodeCenterY * targetZoom);
+
+      setTransform({ x: newX, y: newY, k: targetZoom });
+  }, [nodes]);
+
+  // Helper to Zoom Out to Fit All
+  const zoomToFit = useCallback(() => {
+      if (nodes.length === 0) return;
+
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      nodes.forEach(n => {
+          const isWf = n.type === 'start' || n.type === 'end';
+          const w = isWf ? WORKFLOW_NODE_SIZE : NODE_WIDTH;
+          const h = isWf ? WORKFLOW_NODE_SIZE : NODE_HEIGHT;
+          minX = Math.min(minX, n.position.x);
+          minY = Math.min(minY, n.position.y);
+          maxX = Math.max(maxX, n.position.x + w);
+          maxY = Math.max(maxY, n.position.y + h);
+      });
+
+      // Add padding
+      const padding = 100;
+      const contentWidth = (maxX - minX) + padding * 2;
+      const contentHeight = (maxY - minY) + padding * 2;
+
+      // Approximate viewport
+      const screenWidth = window.innerWidth; 
+      const screenHeight = window.innerHeight;
+
+      const scaleX = screenWidth / contentWidth;
+      const scaleY = screenHeight / contentHeight;
+      let newK = Math.min(scaleX, scaleY, 1); 
+      newK = Math.max(0.1, newK); 
+
+      // Center the content bounds
+      const contentCenterX = minX + (maxX - minX) / 2;
+      const contentCenterY = minY + (maxY - minY) / 2;
+
+      const newX = (screenWidth / 2) - (contentCenterX * newK);
+      const newY = (screenHeight / 2) - (contentCenterY * newK);
+
+      setTransform({ x: newX, y: newY, k: newK });
+  }, [nodes]);
+
+  // Workflow Sequencer Effect
+  useEffect(() => {
+      if (workflowStatus !== 'running') {
+          if (workflowTimeoutRef.current) {
+              window.clearTimeout(workflowTimeoutRef.current);
+              workflowTimeoutRef.current = null;
+          }
+          return;
+      }
+
+      // Initial Start (Step 0)
+      if (currentStepIndex === 0) {
+          const step = workflowQueue[0];
+          if (step && step.type === 'node') {
+              // 2s Smooth Transition to Start Node
+              setCameraTransitionDuration(2000); 
+              focusOnNode(step.id);
+              onSelect({ type: 'node', id: step.id }, false);
+              
+              // Wait for Zoom (2s) + Stay (2s) = 4s total
+              workflowTimeoutRef.current = window.setTimeout(() => {
+                  setCurrentStepIndex(1);
+              }, 4000);
+          }
+          return;
+      }
+
+      // Completion
+      if (currentStepIndex >= workflowQueue.length) {
+          setCameraTransitionDuration(2000); // 2s Smooth Zoom Out
+          zoomToFit();
+          setWorkflowStatus('completed');
+          addToast('Workflow Completed', 'bg-green-600');
+          setAnimationState({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
+          
+          // Reset duration and state after animation completes
+          workflowTimeoutRef.current = window.setTimeout(() => {
+               setCameraTransitionDuration(0); 
+               setWorkflowRunningNodeId(null);
+               setCurrentStepIndex(0);
+          }, 2000);
+          return;
+      }
+
+      const step = workflowQueue[currentStepIndex];
+      let delay = 0;
+
+      if (step.type === 'node') {
+          // Transition: 1s (Move Slowly)
+          setCameraTransitionDuration(1000); 
+          focusOnNode(step.id);
+          setAnimationState(prev => ({ ...prev, activeNodes: new Set([step.id]), activeConnections: new Set() }));
+          onSelect({ type: 'node', id: step.id }, false);
+          
+          // Wait: Transition (1s) + Stay (2s) = 3s total
+          delay = 3000;
+          
+      } else if (step.type === 'connection') {
+          // Connections don't move camera, just animate line
+          setAnimationState(prev => ({ ...prev, activeConnections: new Set([step.id]) })); 
+          delay = 1000; // Flash connection for 1s
+      }
+
+      // Schedule Next Step
+      workflowTimeoutRef.current = window.setTimeout(() => {
+          setCurrentStepIndex(prev => prev + 1);
+      }, delay);
+
+      return () => {
+          if (workflowTimeoutRef.current) {
+              window.clearTimeout(workflowTimeoutRef.current);
+          }
+      };
+
+  }, [workflowStatus, currentStepIndex, workflowQueue, focusOnNode, zoomToFit, addToast]); 
+
+  const generateWorkflowQueue = (startNodeId: string): WorkflowStep[] => {
+      const queue: WorkflowStep[] = [];
+      const visited = new Set<string>();
+      const nodeMap = new Map(nodes.map(n => [n.id, n]));
+      
+      const linearizedSteps: WorkflowStep[] = [];
+      
+      const traverse = (currentId: string) => {
+          linearizedSteps.push({ type: 'node', id: currentId });
+          
+          // Find outgoing connections
+          const outgoing = connections.filter(c => c.fromNodeId === currentId);
+          
+          // Sort outgoing by y position
+          outgoing.sort((a, b) => {
+              const nodeA = nodeMap.get(a.toNodeId);
+              const nodeB = nodeMap.get(b.toNodeId);
+              return (nodeA?.position.y || 0) - (nodeB?.position.y || 0);
+          });
+
+          for (const conn of outgoing) {
+              if (!visited.has(conn.toNodeId)) {
+                  visited.add(conn.toNodeId);
+                  linearizedSteps.push({ type: 'connection', id: conn.id });
+                  traverse(conn.toNodeId);
+              }
+          }
+      };
+      
+      traverse(startNodeId);
+      return linearizedSteps;
+  };
+
+  const handleStartWorkflowWrapper = useCallback((nodeId: string) => {
+      const queue = generateWorkflowQueue(nodeId);
+      if (queue.length === 0) return;
+
+      setWorkflowQueue(queue);
+      setCurrentStepIndex(0);
+      setWorkflowStatus('running');
+      setWorkflowRunningNodeId(nodeId);
+      setIsRightSidebarOpen(true);
+      
+      setAnimationState({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
+      addToast('Workflow Started', 'bg-blue-600');
+
+  }, [nodes, connections, addToast]); 
+
+  const handleToggleWorkflow = useCallback(() => {
+      if (workflowStatus === 'running') {
+          setWorkflowStatus('paused');
+          addToast('Workflow Paused', 'bg-yellow-500');
+      } else if (workflowStatus === 'paused') {
+          setWorkflowStatus('running');
+          addToast('Workflow Resumed', 'bg-green-500');
+      } else if (workflowStatus === 'completed' || workflowStatus === 'idle') {
+          const startNode = nodes.find(n => n.type === 'start') || nodes[0];
+          if (startNode) {
+              handleStartWorkflowWrapper(startNode.id);
+          }
+      }
+  }, [workflowStatus, nodes, handleStartWorkflowWrapper, addToast]);
+
+  const handleStopWorkflow = useCallback(() => {
+     setWorkflowStatus('idle');
+     setCurrentStepIndex(0);
+     setWorkflowRunningNodeId(null);
+     setCameraTransitionDuration(2000); // 2s Smooth Zoom Out on Stop
+     zoomToFit();
+     setAnimationState({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
+     if (workflowTimeoutRef.current) clearTimeout(workflowTimeoutRef.current);
+     addToast('Workflow Stopped', 'bg-gray-600');
+     
+     // Reset duration after zoom out
+     setTimeout(() => setCameraTransitionDuration(0), 2000);
+  }, [addToast, zoomToFit]);
+
+
+  const startTutorialSequence = (mode: 'ai' | 'dl', loadedNodes: Node[]) => {
+      setTutorialState({ active: false, step: 0, highlightNodeId: null, glowButton: null, message: null });
+      
+      let targetNodeId: string | undefined;
+      
+      if (mode === 'ai') {
+          targetNodeId = loadedNodes.find(n => n.type === 'reg-linear')?.id;
+          if (targetNodeId) {
+              setTutorialState({ active: true, step: 1, highlightNodeId: targetNodeId, glowButton: null, message: null });
+              setTimeout(() => {
+                  setTutorialState(prev => prev.step === 1 ? { ...prev, step: 2 } : prev);
+              }, 5000);
+          }
+      } else if (mode === 'dl') {
+          targetNodeId = loadedNodes.find(n => n.type === 'vit-base')?.id;
+          if(targetNodeId) {
+              setTutorialState({ active: true, step: 1, highlightNodeId: targetNodeId, glowButton: null, message: null });
+          }
+      }
+  }
+
   const handleModeChange = useCallback((newMode: 'aws' | 'ai' | 'dl') => {
       if (appMode === newMode) return;
       const currentState = getCurrentState();
@@ -140,31 +416,53 @@ const App: React.FC = () => {
       else if (appMode === 'ai') setAiState(currentState);
       else if (appMode === 'dl') setDlState(currentState);
       
-      if (newMode === 'ai') {
-          if (aiState) loadState(aiState);
-          else resetState();
-          addToast("Switched to AI Visualizer", 'bg-blue-600');
-          setIsLeftSidebarOpen(true);
-          setIsRightSidebarOpen(false); 
-      } else if (newMode === 'dl') {
-          if (dlState) loadState(dlState);
-          else resetState();
-          addToast("Switched to Deep Learning Visualizer", 'bg-purple-600');
-          setIsLeftSidebarOpen(true);
-          setIsRightSidebarOpen(false);
-      } else {
-          if (awsState) loadState(awsState);
-          else resetState();
-          addToast("Switched to AWS Visualizer", 'bg-orange-600');
-          setIsLeftSidebarOpen(true);
-          setIsRightSidebarOpen(true);
-      }
       setAppMode(newMode);
       setSelection([]);
       setUndoStack([]);
       setRedoStack([]);
       setCompareMode(false);
       setCompareNodeId(null);
+      setTutorialState({ active: false, step: 0, highlightNodeId: null, glowButton: null, message: null });
+
+      if (newMode === 'ai') {
+          if (aiState) {
+              loadState(aiState);
+          } else {
+              resetState();
+              const template = AI_TEMPLATES.find(t => t.name === 'Linear Regression Pipeline');
+              if (template) {
+                  const { nodes: newNodes } = applyTemplateSync(template, {x: 100, y: 100});
+                  startTutorialSequence('ai', newNodes);
+              }
+          }
+          addToast("Switched to AI Visualizer", 'bg-blue-600');
+          setIsLeftSidebarOpen(true);
+          setIsRightSidebarOpen(false); 
+      } else if (newMode === 'dl') {
+          if (dlState) {
+              loadState(dlState);
+          } else {
+              resetState();
+              const template = AI_TEMPLATES.find(t => t.name === 'Vision Transformer (ViT) Classifier');
+              if(template) {
+                  const { nodes: newNodes } = applyTemplateSync(template, {x: 100, y: 100});
+                  startTutorialSequence('dl', newNodes);
+              }
+          }
+          addToast("Switched to Deep Learning Visualizer", 'bg-purple-600');
+          setIsLeftSidebarOpen(true);
+          setIsRightSidebarOpen(false);
+      } else {
+          if (awsState) loadState(awsState);
+          else {
+              resetState();
+              const template = ARCHITECTURE_TEMPLATES.find(t => t.name === 'Comprehensive Cloud Architecture');
+              if (template) applyTemplate(template, {x: 100, y: 100});
+          }
+          addToast("Switched to AWS Visualizer", 'bg-orange-600');
+          setIsLeftSidebarOpen(true);
+          setIsRightSidebarOpen(true);
+      }
   }, [appMode, getCurrentState, loadState, awsState, aiState, dlState]);
 
   const resetState = () => {
@@ -253,14 +551,6 @@ const App: React.FC = () => {
       localStorage.setItem('aws-designer-theme', theme);
   }, [theme]);
   
-  const addToast = useCallback((message: string, color: string = 'bg-green-500', duration: number = 4000) => {
-      const id = Date.now() + Math.random();
-      setToasts(prev => [...prev, { id, message, color, duration }]);
-      setTimeout(() => {
-          setToasts(current => current.filter(t => t.id !== id));
-      }, duration);
-  }, []);
-
   const handleAutoFix = useCallback((issue: ValidationIssue) => {
       if (!issue.fixAction || !issue.missingComponent) return;
       const targetNode = nodes.find(n => n.id === issue.nodeId);
@@ -392,7 +682,6 @@ const App: React.FC = () => {
     return newConnection;
   }, [connections, pushToUndoStack]);
 
-  // Helper to find safe position for bulk imports
   const calculateSmartPosition = useCallback((existingNodes: Node[]) => {
       if (existingNodes.length === 0) return { x: 100, y: 100 };
       
@@ -405,19 +694,19 @@ const App: React.FC = () => {
           minY = Math.min(minY, n.position.y);
       });
       
-      // Place new items to the right, with some gap
       return { x: maxX + 150, y: Math.max(50, minY) };
   }, []);
 
   const applyTemplate = useCallback((template: Template, position: Vector2D) => {
       pushToUndoStack();
-      
-      // Calculate offset based on current nodes to prevent overlap if manual position wasn't meant to overlap
+      const result = applyTemplateSync(template, position);
+      setNodes(prev => [...prev, ...result.nodes]);
+      setConnections(prev => [...prev, ...result.connections]);
+      addToast(`Applied '${template.name}' template!`);
+  }, [pushToUndoStack, addToast, nodes, calculateSmartPosition]);
+
+  const applyTemplateSync = useCallback((template: Template, position: Vector2D) => {
       const smartPos = calculateSmartPosition(nodes);
-      // Use smartPos instead of passed position if we want to auto-arrange, 
-      // but for Templates usually user drops it. Let's use smartPos if dropped blindly (from palette).
-      
-      // Determine effective start position. If position is default (e.g. from palette), use smartPos.
       const startX = (position.x === 100 && position.y === 100) ? smartPos.x : position.x;
       const startY = (position.x === 100 && position.y === 100) ? smartPos.y : position.y;
 
@@ -440,7 +729,6 @@ const App: React.FC = () => {
               nodeMap.set(templateNode.id, newNode.id);
           }
       });
-      setNodes(prev => [...prev, ...newNodes]);
       
       const newConnections: Connection[] = [];
       template.connections.forEach(templateConn => {
@@ -457,9 +745,9 @@ const App: React.FC = () => {
             newConnections.push(newConnection);
           }
       });
-      setConnections(prev => [...prev, ...newConnections]);
-      addToast(`Applied '${template.name}' template!`);
-  }, [pushToUndoStack, addToast, nodes, calculateSmartPosition]);
+      
+      return { nodes: newNodes, connections: newConnections };
+  }, [nodes, calculateSmartPosition]);
 
   const handleAddCategory = useCallback((category: AWSCategory) => {
       pushToUndoStack();
@@ -694,8 +982,6 @@ const App: React.FC = () => {
         return;
     }
     
-    // AI/DL Mode Logic: Auto-open Right Sidebar if selecting a node
-    // Independent of Left Sidebar state.
     if ((appMode === 'ai' || appMode === 'dl') && item.type === 'node') {
         setIsRightSidebarOpen(true);
         if (compareMode) {
@@ -704,6 +990,25 @@ const App: React.FC = () => {
                 return;
             }
         }
+    }
+    
+    if (tutorialState.active && tutorialState.step === 1 && item.id === tutorialState.highlightNodeId) {
+        setTutorialState(prev => ({ 
+            ...prev, 
+            step: 2, 
+            highlightNodeId: null, 
+            glowButton: appMode === 'dl' ? 'tensorflow' : 'compare',
+            message: 'Now check the inspector!'
+        }));
+        
+        setTimeout(() => {
+             setTutorialState(prev => prev.step === 2 ? {
+                 ...prev,
+                 step: 3,
+                 message: 'Select another node to compare!',
+                 glowButton: null
+             } : prev);
+        }, 1500);
     }
 
     if (additive) {
@@ -718,8 +1023,6 @@ const App: React.FC = () => {
     } else {
         const isSelected = selection.some(s => s.id === item.id && s.type === item.type);
         if (selection.length === 1 && isSelected) {
-            // Force open Right sidebar even if already selected in AI mode 
-            // (e.g. from "View Code" button when sidebar is closed)
             if ((appMode === 'ai' || appMode === 'dl') && !isRightSidebarOpen) {
                 setIsRightSidebarOpen(true);
             }
@@ -740,10 +1043,7 @@ const App: React.FC = () => {
               selectedIds.push({ type: 'node', id: n.id });
           }
       });
-      // Add logic for groups/shapes if needed
       setSelection(selectedIds);
-      // We don't turn off isMultiSelectMode here to allow continuous selection, 
-      // but user can toggle button off to switch to cursor mode.
   };
 
   const handleAlign = (direction: 'top' | 'middle' | 'bottom' | 'left' | 'center' | 'right') => {
@@ -835,12 +1135,9 @@ const App: React.FC = () => {
         
       if (selectedNodes.length < 2) return;
 
-      // Determine axis based on bounding box
-      // If width > height, assume horizontal row. Else vertical column.
       const isHorizontal = selectionBounds.w > selectionBounds.h;
       
       if (isHorizontal) {
-          // Sort by X
           selectedNodes.sort((a, b) => a.position.x - b.position.x);
           
           let currentX = selectedNodes[0].position.x;
@@ -849,7 +1146,7 @@ const App: React.FC = () => {
           selectedNodes.forEach((node, index) => {
               if (index === 0) {
                   currentX += (node.type === 'start' || node.type === 'end' ? WORKFLOW_NODE_SIZE : NODE_WIDTH) + gap;
-                  return; // Reference node stays put
+                  return; 
               }
               
               const nodeIndex = updatedNodes.findIndex(n => n.id === node.id);
@@ -863,7 +1160,6 @@ const App: React.FC = () => {
           });
           setNodes(updatedNodes);
       } else {
-          // Sort by Y
           selectedNodes.sort((a, b) => a.position.y - b.position.y);
           
           let currentY = selectedNodes[0].position.y;
@@ -872,7 +1168,7 @@ const App: React.FC = () => {
           selectedNodes.forEach((node, index) => {
               if (index === 0) {
                   currentY += (node.type === 'start' || node.type === 'end' ? WORKFLOW_NODE_SIZE : NODE_HEIGHT) + gap;
-                  return; // Reference node stays put
+                  return;
               }
               
               const nodeIndex = updatedNodes.findIndex(n => n.id === node.id);
@@ -886,162 +1182,6 @@ const App: React.FC = () => {
           });
           setNodes(updatedNodes);
       }
-  }
-
-
-  const handleStopWorkflow = useCallback(() => {
-     if (workflowCleanupRef.current) {
-         workflowCleanupRef.current();
-         workflowCleanupRef.current = null;
-     }
-     setWorkflowRunningNodeId(null);
-     setAnimationState({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
-     addToast('Workflow stopped', 'bg-gray-600');
-  }, [addToast]);
-
-  const startWorkflowAnimation = useCallback((startNodeId: string) => {
-      // ... (Same as previous implementation)
-      if (workflowRunningNodeId) {
-          handleStopWorkflow();
-      }
-
-      setAnimationState({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
-
-      const nodeMap = new Map(nodes.map(n => [n.id, n]));
-      const adj = new Map<string, { connId: string, toId: string }[]>();
-      nodes.forEach(n => adj.set(n.id, []));
-      connections.forEach(c => {
-          adj.get(c.fromNodeId)?.push({ connId: c.id, toId: c.toNodeId });
-      });
-
-      const DURATION_MS = 60 * 1000; 
-      const CYCLE_DELAY = 2500; 
-      const startTime = Date.now();
-      
-      const notifiedCriticalNodes = new Set<string>();
-      const notifiedEc2Starts = new Set<string>();
-
-      let activeTimeouts: number[] = [];
-
-      const runCycle = () => {
-          if (Date.now() - startTime > DURATION_MS) {
-              setAnimationState({ activeNodes: new Set(), activeConnections: new Set(), alertConnections: new Set() });
-              setWorkflowRunningNodeId(null);
-              return;
-          }
-          
-          const q: { nodeId: string, delay: number, isHighTraffic: boolean }[] = [{ nodeId: startNodeId, delay: 0, isHighTraffic: false }];
-          const visited = new Set<string>([startNodeId]);
-
-          while(q.length > 0) {
-              const { nodeId, delay, isHighTraffic } = q.shift()!;
-              const currentNode = nodeMap.get(nodeId);
-              
-              if (!currentNode) continue;
-
-              const isCritical = currentNode.data?.health === 'critical';
-              
-              let currentPathTraffic = isHighTraffic;
-              
-              if (currentNode.type.startsWith('bu-')) {
-                   if (currentNode.data.traffic === 'high') currentPathTraffic = true;
-                   else if (currentNode.data.traffic === 'normal' || currentNode.data.traffic === 'low') currentPathTraffic = false;
-              }
-              
-              const t1 = window.setTimeout(() => {
-                  setAnimationState(prev => ({...prev, activeNodes: new Set(prev.activeNodes).add(nodeId)}));
-                  
-                  if (currentNode.type === 'ec2' && !notifiedEc2Starts.has(nodeId)) {
-                      addToast('EC2 Instance Started', 'bg-green-500', 2000);
-                      notifiedEc2Starts.add(nodeId);
-                  }
-
-                  if (isCritical) {
-                      if (!notifiedCriticalNodes.has(nodeId)) {
-                          addToast(`Flow stopped: ${currentNode?.data.label || 'Node'} is unhealthy`, 'bg-red-600', 5000);
-                          notifiedCriticalNodes.add(nodeId);
-                      }
-                  }
-
-                  setTimeout(() => {
-                      setAnimationState(prev => {
-                          const next = new Set(prev.activeNodes);
-                          next.delete(nodeId);
-                          return { ...prev, activeNodes: next };
-                      });
-                  }, 1000);
-              }, delay);
-              activeTimeouts.push(t1);
-
-              if (isCritical) continue;
-
-              if (currentNode?.type === 'tg') {
-                  const tgRect = {
-                      x: currentNode.position.x,
-                      y: currentNode.position.y,
-                      w: 300, 
-                      h: 200
-                  };
-
-                  nodes.forEach(childNode => {
-                      if (childNode.id !== nodeId && !visited.has(childNode.id)) {
-                          const cx = childNode.position.x + NODE_WIDTH/2;
-                          const cy = childNode.position.y + NODE_HEIGHT/2;
-                          if (cx > tgRect.x && cx < tgRect.x + tgRect.w && cy > tgRect.y && cy < tgRect.y + tgRect.h) {
-                               visited.add(childNode.id);
-                               q.push({ nodeId: childNode.id, delay: delay + 300, isHighTraffic: currentPathTraffic });
-                          }
-                      }
-                  });
-              }
-
-              const neighbors = adj.get(nodeId) || [];
-              neighbors.forEach(edge => {
-                   const connectionDelay = delay + 500;
-                   const t2 = window.setTimeout(() => {
-                       setAnimationState(prev => {
-                           const newActive = new Set(prev.activeConnections).add(edge.connId);
-                           const newAlert = new Set(prev.alertConnections);
-                           if (currentPathTraffic) {
-                               newAlert.add(edge.connId);
-                           }
-                           return { ...prev, activeConnections: newActive, alertConnections: newAlert };
-                       });
-                       
-                       setTimeout(() => {
-                           setAnimationState(prev => {
-                               const nextActive = new Set(prev.activeConnections);
-                               nextActive.delete(edge.connId);
-                               const nextAlert = new Set(prev.alertConnections);
-                               nextAlert.delete(edge.connId);
-                               return { ...prev, activeConnections: nextActive, alertConnections: nextAlert };
-                           });
-                       }, 1000);
-                   }, connectionDelay);
-                   activeTimeouts.push(t2);
-
-                   if (!visited.has(edge.toId)) {
-                      visited.add(edge.toId);
-                      q.push({ nodeId: edge.toId, delay: connectionDelay + 500, isHighTraffic: currentPathTraffic }); 
-                   }
-              });
-          }
-          
-          const tNext = window.setTimeout(runCycle, CYCLE_DELAY);
-          activeTimeouts.push(tNext);
-      };
-      
-      runCycle();
-      setWorkflowRunningNodeId(startNodeId);
-      
-      const cleanup = () => activeTimeouts.forEach(clearTimeout);
-      workflowCleanupRef.current = cleanup;
-      return cleanup;
-  }, [nodes, connections, addToast, handleStopWorkflow, workflowRunningNodeId]);
-  
-  const handleStartWorkflowWrapper = (nodeId: string) => {
-      startWorkflowAnimation(nodeId);
-      addToast('Workflow started (1m duration)', 'bg-green-600');
   }
 
   const singleSelection = selection.length === 1 ? selection[0] : null;
@@ -1193,7 +1333,6 @@ const App: React.FC = () => {
 
   const isZenMode = !isLeftSidebarOpen && !isRightSidebarOpen;
 
-  // Render Alignment Toolbar Logic
   const AlignmentToolbar = () => {
       const [gap, setGap] = useState(50);
       const isDragging = useRef(false);
@@ -1205,11 +1344,11 @@ const App: React.FC = () => {
           isDragging.current = true;
           startY.current = e.clientY;
           startGap.current = gap;
-          pushToUndoStack(); // Save state before drag starts
+          pushToUndoStack(); 
           
           const handleMouseMove = (ev: MouseEvent) => {
               if (!isDragging.current) return;
-              const diff = startY.current - ev.clientY; // Drag up increases gap
+              const diff = startY.current - ev.clientY; 
               const newGap = Math.max(0, startGap.current + diff);
               setGap(newGap);
               handleGapDistribution(newGap);
@@ -1246,7 +1385,6 @@ const App: React.FC = () => {
               <button onClick={() => handleDistribute('horizontal')} title="Tidy Up Horizontal" className="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"><DistributeHorizontalIcon className="w-4 h-4"/></button>
               <button onClick={() => handleDistribute('vertical')} title="Tidy Up Vertical" className="p-1.5 rounded text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700"><DistributeVerticalIcon className="w-4 h-4"/></button>
               
-              {/* Gap Tool */}
               <div className="w-px h-4 bg-gray-300 dark:bg-gray-600 mx-1"></div>
               <div className="flex items-center space-x-1 bg-gray-100 dark:bg-gray-900 rounded px-1">
                   <input 
@@ -1306,7 +1444,7 @@ const App: React.FC = () => {
         onSelectAreaForExport={() => setIsSelectingForExport(true)}
         onExportGif={handleExportGif}
         isRecordingGif={isRecordingGif}
-        isZenMode={isZenMode} // Keeping prop for now but handled via isOpen
+        isZenMode={isZenMode}
         isOpen={isLeftSidebarOpen}
         snapshots={snapshots}
         onTakeSnapshot={(name) => {
@@ -1333,7 +1471,6 @@ const App: React.FC = () => {
       <main className="flex-1 relative overflow-hidden transition-all duration-300">
         <AlignmentToolbar />
         <div className="absolute bottom-4 left-4 z-50 flex items-center space-x-3">
-            {/* Edit Actions */}
             <div className="flex items-center space-x-1 bg-white dark:bg-gray-800 p-1.5 rounded-lg shadow-lg border border-gray-200 dark:border-gray-700/50">
                 <button 
                     title="Select Mode" 
@@ -1348,7 +1485,6 @@ const App: React.FC = () => {
                 <button title="Undo (Ctrl+Z)" onClick={handleUndo} disabled={undoStack.length === 0} className="p-2 rounded-md text-gray-500 dark:text-gray-300 hover:bg-orange-500 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"><UndoIcon className="w-5 h-5"/></button>
                 <button title="Redo (Ctrl+Shift+Z)" onClick={handleRedo} disabled={redoStack.length === 0} className="p-2 rounded-md text-gray-500 dark:text-gray-300 hover:bg-orange-500 hover:text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"><RedoIcon className="w-5 h-5"/></button>
                  <div className="w-px h-6 bg-gray-300 dark:bg-gray-600"></div>
-                 {/* Zoom Controls */}
                  <button title="Zoom Out" onClick={() => handleZoom(-0.1)} className="p-2 rounded-md text-gray-500 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"><ZoomOutIcon className="w-5 h-5"/></button>
                  <div className="relative group flex items-center">
                     <input 
@@ -1364,7 +1500,6 @@ const App: React.FC = () => {
             </div>
         </div>
         
-        {/* Error Validation Panel (AWS Mode Only) */}
         {selectedIssue && appMode === 'aws' && (
             <div className="absolute bottom-20 left-1/2 transform -translate-x-1/2 z-50 bg-white dark:bg-gray-800 rounded-lg shadow-2xl border-l-4 border-red-500 p-4 max-w-lg w-full animate-bounce-in">
                 <div className="flex justify-between items-start">
@@ -1423,7 +1558,7 @@ const App: React.FC = () => {
           onDisconnectNode={disconnectNode}
           onStartWorkflow={handleStartWorkflowWrapper}
           onStopWorkflow={handleStopWorkflow}
-          workflowRunningNodeId={workflowRunningNodeId}
+          workflowRunningNodeId={workflowRunningNodeId} 
           selection={selection}
           onSelect={onSelect}
           isSelectingForExport={isSelectingForExport}
@@ -1435,6 +1570,8 @@ const App: React.FC = () => {
           onInteractionEnd={pushToUndoStack}
           transform={transform}
           setTransform={setTransform}
+          activeTutorialNodeId={tutorialState.highlightNodeId}
+          cameraTransitionDuration={cameraTransitionDuration}
         />
       </main>
       <RightSidebar 
@@ -1457,15 +1594,25 @@ const App: React.FC = () => {
         onUpdateTextNode={updateTextNodeData}
         onDeleteTextNode={deleteTextNode}
         onDeselect={() => setSelection([])}
-        onStartWorkflow={handleStartWorkflowWrapper}
+        onStartWorkflow={handleToggleWorkflow}
+        workflowStatus={workflowStatus}
         onAlign={handleAlign}
-        isZenMode={isZenMode} // Pass false or logic for width
-        isOpen={isRightSidebarOpen} // Pass visibility state
-        onClose={() => setIsRightSidebarOpen(false)} // Pass close handler
+        isZenMode={isZenMode} 
+        isOpen={isRightSidebarOpen} 
+        onClose={() => setIsRightSidebarOpen(false)} 
         compareMode={compareMode}
         setCompareMode={setCompareMode}
         nodes={nodes}
         validationIssues={validationIssues}
+        appMode={appMode} 
+        tutorialGlowButton={tutorialState.glowButton}
+        tutorialMessage={tutorialState.message}
+        onPauseWorkflow={() => {
+            if (workflowStatus === 'running') {
+                setWorkflowStatus('paused');
+                addToast('Paused on interaction', 'bg-yellow-500');
+            }
+        }}
       />
     </div>
   );

@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect } from 'react';
-import { Node, AWSServiceHealth, Connection, Group, GroupData, Shape, ShapeData, TextNode, TextNodeData, Vector2D, ValidationIssue } from '../types';
+import { Node, AWSServiceHealth, Connection, Group, GroupData, Shape, ShapeData, TextNode, TextNodeData, Vector2D, ValidationIssue, WorkflowStatus } from '../types';
 import { LockIcon, AlignTopIcon, AlignMiddleIcon, AlignBottomIcon, AlignLeftIcon, AlignCenterIcon, AlignRightIcon, XIcon } from './Icons';
 import { EC2_INSTANCE_TYPES, RDS_ENGINES, NODE_WIDTH, NODE_HEIGHT, PIPELINE_COMMON_CODE } from '../constants';
 
@@ -28,6 +28,7 @@ interface RightSidebarProps {
   onDeleteTextNode: (textId: string) => void;
   onDeselect: () => void;
   onStartWorkflow: (nodeId: string) => void;
+  workflowStatus?: WorkflowStatus;
   onAlign: (direction: AlignmentDirection) => void;
   isZenMode: boolean; // Kept for type compatibility but unused for visibility
   isOpen?: boolean; // New prop for visibility
@@ -36,9 +37,13 @@ interface RightSidebarProps {
   setCompareMode?: (enabled: boolean) => void;
   nodes?: Node[]; 
   validationIssues?: ValidationIssue[];
+  appMode?: 'aws' | 'ai' | 'dl';
+  tutorialGlowButton?: 'compare' | 'tensorflow' | null;
+  tutorialMessage?: string | null;
+  onPauseWorkflow?: () => void;
 }
 
-const GeneralNodeConfig: React.FC<{node: Node, onUpdate: (data: any) => void, onStartWorkflow: () => void}> = ({node, onUpdate, onStartWorkflow}) => (
+const GeneralNodeConfig: React.FC<{node: Node, onUpdate: (data: any) => void, onStartWorkflow: () => void, workflowStatus?: WorkflowStatus}> = ({node, onUpdate, onStartWorkflow, workflowStatus}) => (
     <>
          <div>
           <label className="block text-sm font-medium text-gray-500 dark:text-gray-400">Label</label>
@@ -65,20 +70,45 @@ const GeneralNodeConfig: React.FC<{node: Node, onUpdate: (data: any) => void, on
         {node.type === 'start' &&
             <button
                 onClick={onStartWorkflow}
-                className="w-full mt-4 bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded transition-colors shadow-sm"
+                className={`w-full mt-4 text-white font-bold py-2 px-4 rounded transition-colors shadow-sm flex items-center justify-center gap-2 ${
+                    workflowStatus === 'running' 
+                    ? 'bg-yellow-600 hover:bg-yellow-700' 
+                    : (workflowStatus === 'paused' ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700')
+                }`}
             >
-                Run Workflow (60s)
+                {workflowStatus === 'running' && (
+                    <>
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd"></path></svg>
+                        Pause Workflow
+                    </>
+                )}
+                {workflowStatus === 'paused' && (
+                    <>
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd"></path></svg>
+                        Resume Workflow
+                    </>
+                )}
+                {(workflowStatus === 'idle' || workflowStatus === 'completed') && (
+                    <>
+                        <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd"></path></svg>
+                        Run Workflow
+                    </>
+                )}
             </button>
         }
     </>
 )
 
-const CodeInspector: React.FC<{ node: Node, compareNode: Node | null, compareMode: boolean }> = ({ node, compareNode, compareMode }) => {
+const CodeInspector: React.FC<{ 
+    node: Node, 
+    compareNode: Node | null, 
+    compareMode: boolean, 
+    appMode?: string,
+    glowButton?: 'compare' | 'tensorflow' | null 
+}> = ({ node, compareNode, compareMode, appMode, glowButton }) => {
     const [framework, setFramework] = useState<'pytorch' | 'tensorflow'>('pytorch');
-    // Permanent Highlight: Logic ensures 'specific' changes always show background color
     const highlightSpecific = true;
 
-    // Determine currently displayed code based on toggle
     const currentCode = framework === 'pytorch' ? (node.data.code || '') : (node.data.codeTF || '# No TensorFlow code available');
     const compareCode = compareNode ? (framework === 'pytorch' ? compareNode.data.code : compareNode.data.codeTF) : undefined;
 
@@ -92,7 +122,6 @@ const CodeInspector: React.FC<{ node: Node, compareNode: Node | null, compareMod
                 {lines.map((line, idx) => {
                     let className = "px-1 ";
                     
-                    // Logic for Comparison Highlighting
                     if (highlightType === 'add') {
                         if (!compLines.includes(line) && line.trim() !== '') {
                             className += "bg-green-900/50 text-green-200 block w-full";
@@ -102,7 +131,6 @@ const CodeInspector: React.FC<{ node: Node, compareNode: Node | null, compareMod
                             className += "bg-red-900/50 text-red-200 block w-full";
                         }
                     } else {
-                        // Standard Logic (Single Node) - Specific changes highlighting
                         if (highlightSpecific && !commonLines.includes(line) && line.trim() !== '') {
                             className += "bg-yellow-500/30 block w-full"; 
                         }
@@ -150,8 +178,8 @@ const CodeInspector: React.FC<{ node: Node, compareNode: Node | null, compareMod
              <div className="flex justify-between items-center pb-2 border-b border-gray-200 dark:border-gray-700">
                 <h3 className="font-bold text-lg">{node.data.label}</h3>
                 
-                {/* Framework Toggle */}
-                {node.data.codeTF ? (
+                {/* Framework Toggle - Hidden for ML (appMode === 'ai') per request */}
+                {node.data.codeTF && appMode !== 'ai' ? (
                     <div className="flex bg-gray-200 dark:bg-gray-700 rounded-md p-0.5">
                         <button 
                             onClick={() => setFramework('pytorch')}
@@ -161,7 +189,7 @@ const CodeInspector: React.FC<{ node: Node, compareNode: Node | null, compareMod
                         </button>
                         <button 
                             onClick={() => setFramework('tensorflow')}
-                            className={`px-2 py-1 text-[10px] font-bold rounded ${framework === 'tensorflow' ? 'bg-white dark:bg-gray-600 shadow text-orange-600 dark:text-white' : 'text-gray-500 dark:text-gray-400'}`}
+                            className={`px-2 py-1 text-[10px] font-bold rounded ${framework === 'tensorflow' ? 'bg-white dark:bg-gray-600 shadow text-orange-600 dark:text-white' : 'text-gray-500 dark:text-gray-400'} ${glowButton === 'tensorflow' ? 'ring-2 ring-orange-500 animate-pulse' : ''}`}
                         >
                             TensorFlow
                         </button>
@@ -416,7 +444,7 @@ const AlignmentPanel: React.FC<{onAlign: (direction: AlignmentDirection) => void
     )
 }
 
-export const RightSidebar: React.FC<RightSidebarProps> = ({ selection, node, compareNode, connection, group, shape, textNode, onUpdateNode, onUpdateConnection, onUpdateGroup, onUpdateShape, onUpdateTextNode, onDeleteNode, onDisconnectNode, onDeleteConnection, onDeleteGroup, onDeleteShape, onDeleteTextNode, onDeselect, onStartWorkflow, onAlign, isZenMode, isOpen, onClose, compareMode, setCompareMode, nodes, validationIssues = [] }) => {
+export const RightSidebar: React.FC<RightSidebarProps> = ({ selection, node, compareNode, connection, group, shape, textNode, onUpdateNode, onUpdateConnection, onUpdateGroup, onUpdateShape, onUpdateTextNode, onDeleteNode, onDisconnectNode, onDeleteConnection, onDeleteGroup, onDeleteShape, onDeleteTextNode, onDeselect, onStartWorkflow, onAlign, isZenMode, isOpen, onClose, compareMode, setCompareMode, nodes, validationIssues = [], appMode, tutorialGlowButton, tutorialMessage, workflowStatus, onPauseWorkflow }) => {
   
   const handleAutoArrangeTG = (tgNode: Node) => {
       if (!nodes) return;
@@ -460,16 +488,28 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ selection, node, com
                     return (
                         <div className="flex flex-col h-full overflow-hidden">
                             {setCompareMode && (
-                                <div className="mb-2 flex items-center justify-end">
+                                <div className="mb-2 flex items-center justify-end relative">
                                     <button 
                                         onClick={() => setCompareMode(!compareMode)}
-                                        className={`text-xs px-2 py-1 rounded font-bold border ${compareMode ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600'}`}
+                                        className={`text-xs px-2 py-1 rounded font-bold border transition-all ${compareMode ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white dark:bg-gray-700 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600'} ${tutorialGlowButton === 'compare' ? 'ring-2 ring-orange-500 animate-pulse shadow-lg shadow-orange-500/50' : ''}`}
                                     >
                                         {compareMode ? 'Disable Comparison' : 'Compare Code'}
                                     </button>
+                                    {tutorialMessage && (
+                                        <div className="absolute top-full right-0 mt-2 bg-blue-600 text-white text-[10px] p-2 rounded shadow-xl whitespace-nowrap animate-bounce z-50">
+                                            <div className="absolute -top-1 right-3 w-2 h-2 bg-blue-600 transform rotate-45"></div>
+                                            {tutorialMessage}
+                                        </div>
+                                    )}
                                 </div>
                             )}
-                            <CodeInspector node={node} compareNode={compareNode || null} compareMode={!!compareMode} />
+                            <CodeInspector 
+                                node={node} 
+                                compareNode={compareNode || null} 
+                                compareMode={!!compareMode} 
+                                appMode={appMode} 
+                                glowButton={tutorialGlowButton}
+                            />
                         </div>
                     );
                 }
@@ -477,9 +517,9 @@ export const RightSidebar: React.FC<RightSidebarProps> = ({ selection, node, com
                 // --- STANDARD PROPERTIES ---
                 return (
                     <>
-                      <div className="space-y-4 flex-1 overflow-y-auto pr-1 min-w-[200px]">
+                      <div className="space-y-4 flex-1 overflow-y-auto pr-1 min-w-[200px]" onMouseDown={() => { if(onPauseWorkflow) onPauseWorkflow(); }}>
                           <ActionSection node={node} issues={validationIssues} onUpdate={(data) => onUpdateNode(node.id, data)} />
-                          <GeneralNodeConfig node={node} onUpdate={(data) => onUpdateNode(node.id, data)} onStartWorkflow={() => onStartWorkflow(node.id)} />
+                          <GeneralNodeConfig node={node} onUpdate={(data) => onUpdateNode(node.id, data)} onStartWorkflow={() => onStartWorkflow(node.id)} workflowStatus={workflowStatus} />
                           <ServiceSpecificConfig node={node} onUpdate={(data) => onUpdateNode(node.id, data)} />
                           
                           {node.type === 'tg' && (

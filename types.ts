@@ -8,6 +8,7 @@ export interface Vector2D {
 
 export type AWSServiceHealth = 'healthy' | 'warning' | 'critical';
 export type TrafficLevel = 'low' | 'normal' | 'high';
+export type WorkflowStatus = 'idle' | 'running' | 'paused' | 'completed';
 
 export interface NodeData {
     label: string;

@@ -45,6 +45,7 @@ const MiniPropertiesMenu: React.FC<{
         <div 
             className="absolute bottom-full mb-2 left-1/2 transform -translate-x-1/2 bg-white dark:bg-gray-800 shadow-xl rounded-lg p-3 border border-gray-200 dark:border-gray-700 z-[1000] w-64 flex flex-col gap-3"
             onMouseDown={e => e.stopPropagation()}
+            onTouchStart={e => e.stopPropagation()}
         >
             <div className="flex justify-between items-center border-b border-gray-100 dark:border-gray-700 pb-2">
                 <span className="text-xs font-bold text-gray-500 uppercase tracking-wider">Quick Edit</span>
@@ -190,7 +191,6 @@ export const DraggableNode: React.FC<DraggableNodeProps> = ({
             }
         }, duration);
     } 
-    // REMOVED AUTO-OPEN TIMER FOR MINI MENU TO FIX REAPPEARANCE BUG
   }, [node.type, isWorkflowRunning, onStartWorkflow, onStopWorkflow, isConnected]);
 
   const handleMouseLeave = useCallback(() => {
@@ -215,13 +215,35 @@ export const DraggableNode: React.FC<DraggableNodeProps> = ({
     setIsDragging(true);
     setShowMiniMenu(false); 
   }, [node.id, node.position, onSelect]);
+
+  const handleTouchStart = useCallback((e: React.TouchEvent) => {
+      e.stopPropagation();
+      const touch = e.touches[0];
+      onSelect(node.id, false);
+      
+      dragStartMouse.current = { x: touch.clientX, y: touch.clientY };
+      dragStartNodePos.current = { x: node.position.x, y: node.position.y };
+      
+      setIsDragging(true);
+      setShowMiniMenu(false);
+  }, [node.id, node.position, onSelect]);
   
-  const handleMouseMove = useCallback((e: MouseEvent) => {
+  const handleMouseMove = useCallback((e: MouseEvent | TouchEvent) => {
     if (isDragging) {
         e.preventDefault();
+        
+        let clientX, clientY;
+        if ('touches' in e) {
+            clientX = e.touches[0].clientX;
+            clientY = e.touches[0].clientY;
+        } else {
+            clientX = (e as MouseEvent).clientX;
+            clientY = (e as MouseEvent).clientY;
+        }
+
         // Calculate delta adjusted by zoom scale
-        const dx = (e.clientX - dragStartMouse.current.x) / transformScale;
-        const dy = (e.clientY - dragStartMouse.current.y) / transformScale;
+        const dx = (clientX - dragStartMouse.current.x) / transformScale;
+        const dy = (clientY - dragStartMouse.current.y) / transformScale;
 
         // Apply delta to initial position
         const newX = dragStartNodePos.current.x + dx;
@@ -246,13 +268,19 @@ export const DraggableNode: React.FC<DraggableNodeProps> = ({
     if (isDragging) {
       window.addEventListener('mousemove', handleMouseMove);
       window.addEventListener('mouseup', handleMouseUp);
+      window.addEventListener('touchmove', handleMouseMove, { passive: false });
+      window.addEventListener('touchend', handleMouseUp);
     } else {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchmove', handleMouseMove);
+      window.removeEventListener('touchend', handleMouseUp);
     }
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
+      window.removeEventListener('touchmove', handleMouseMove);
+      window.removeEventListener('touchend', handleMouseUp);
     };
   }, [isDragging, handleMouseMove, handleMouseUp]);
 
@@ -342,8 +370,9 @@ export const DraggableNode: React.FC<DraggableNodeProps> = ({
     ? (isWorkflowNode ? 'ring-4 ring-orange-500/50' : (isContainerNode ? 'border-orange-500 ring-1 ring-orange-500' : 'ring-2 ring-orange-500 border-orange-500 dark:border-orange-500')) 
     : '';
     
+  // Important: Explicitly handle animation prop for Tutorial Glow
   const animatingClasses = isAnimating 
-    ? (isWorkflowNode ? 'node-animating' : 'node-animating ring-2 ring-orange-400') 
+    ? (isWorkflowNode ? 'node-animating' : 'node-animating ring-4 ring-orange-400 shadow-[0_0_20px_rgba(249,115,22,0.6)]') 
     : '';
     
   // Ring Animation for Start Node Gesture
@@ -361,8 +390,9 @@ export const DraggableNode: React.FC<DraggableNodeProps> = ({
     <div
       ref={nodeRef}
       className={`${baseClasses} ${themeClasses} ${selectedClasses} ${animatingClasses}`}
-      style={{ left: node.position.x, top: node.position.y, ...nodeSizeStyle }}
+      style={{ left: node.position.x, top: node.position.y, ...nodeSizeStyle, zIndex: isAnimating ? 20 : 10 }}
       onMouseDown={handleMouseDown}
+      onTouchStart={handleTouchStart}
       onMouseUp={() => onEndConnection(node.id)}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -466,6 +496,7 @@ export const DraggableNode: React.FC<DraggableNodeProps> = ({
           style={{ top: '50%', right: '-10px', transform: 'translateY(-50%)', opacity: 0 }}
           title="Connect"
           onMouseDown={(e) => { e.stopPropagation(); onStartConnection(node.id); }}
+          onTouchStart={(e) => { e.stopPropagation(); onStartConnection(node.id); }}
         >
           <div className="w-1.5 h-1.5 bg-white rounded-full"></div>
         </div>
